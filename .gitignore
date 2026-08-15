@@ -1,0 +1,87 @@
+# =========================
+# Secrets / env
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.virtualenv/
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+*.whl
+
+# Unit test / coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.cache/
+
+# Logs
+*.log
+logs/
+bot.log
+bot.log.*
+monitoring.log
+app.log
+
+# SQLite / local DB
+*.db
+*.sqlite
+*.sqlite3
+
+# OS junk
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# =========================
+# VS Code / IDE
+# =========================
+.vscode/
+
+# PyCharm
+.idea/
+
+# =========================
+# Docker
+# =========================
+*.tar
+docker-compose.override.yml
+
+# =========================
+# Misc
+# =========================
+*.tmp
+*.swp
+*.swo
+*.bak
+
+# Local private keys
+*.pem
+*.key
+id_rsa
+id_ed25519

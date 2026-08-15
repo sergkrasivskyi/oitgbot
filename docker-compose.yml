@@ -1,0 +1,12 @@
+services:
+  oitgbot:
+    build: .
+    container_name: oitgbot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./bot.log:/app/bot.log
+    command: ["python", "run.py"]
+    stop_signal: SIGTERM
+    stop_grace_period: 20s
