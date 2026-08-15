@@ -44,6 +44,14 @@ def _require_epoch_milliseconds(value: object, field_name: str) -> datetime:
         ) from exc
 
 
+def _require_utc_datetime(value: object, field_name: str) -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ValueError(f"{field_name} must be a timezone-aware UTC datetime")
+    if value.utcoffset() != timezone.utc.utcoffset(value):
+        raise ValueError(f"{field_name} must be a timezone-aware UTC datetime")
+    return value.astimezone(timezone.utc)
+
+
 @dataclass(slots=True)
 class OIRow:
     symbol: str
@@ -125,4 +133,73 @@ class BinanceRateLimit:
             interval=interval,
             interval_num=_require_positive_int(payload.get("intervalNum"), "intervalNum"),
             limit=_require_positive_int(payload.get("limit"), "limit"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MarkPriceUpdate:
+    """One validated Binance mark-price event."""
+
+    symbol: str
+    mark_price: float
+    exchange_time: datetime
+    received_at_utc: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.symbol, str) or not self.symbol:
+            raise ValueError("mark price entry is missing a symbol")
+        if isinstance(self.mark_price, bool):
+            raise ValueError("mark price must be a finite positive number")
+        try:
+            mark_price = float(self.mark_price)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("mark price must be a finite positive number") from exc
+        if not math.isfinite(mark_price) or mark_price <= 0:
+            raise ValueError("mark price must be a finite positive number")
+
+        object.__setattr__(self, "mark_price", mark_price)
+        object.__setattr__(
+            self,
+            "exchange_time",
+            _require_utc_datetime(self.exchange_time, "exchange_time"),
+        )
+        object.__setattr__(
+            self,
+            "received_at_utc",
+            _require_utc_datetime(self.received_at_utc, "received_at_utc"),
+        )
+
+    @classmethod
+    def from_binance_payload(
+        cls, payload: object, received_at_utc: datetime
+    ) -> "MarkPriceUpdate":
+        if not isinstance(payload, Mapping):
+            raise ValueError("mark price entry must be an object")
+
+        symbol = payload.get("s")
+        if not isinstance(symbol, str) or not symbol:
+            raise ValueError("mark price entry is missing a symbol")
+
+        if "p" not in payload:
+            raise ValueError("mark price entry is missing a price")
+        raw_price = payload["p"]
+        if isinstance(raw_price, bool):
+            raise ValueError("mark price must be a finite positive number")
+        try:
+            mark_price = float(raw_price)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("mark price must be a finite positive number") from exc
+        if not math.isfinite(mark_price) or mark_price <= 0:
+            raise ValueError("mark price must be a finite positive number")
+
+        if "E" not in payload:
+            raise ValueError("mark price entry is missing event time")
+
+        return cls(
+            symbol=symbol,
+            mark_price=mark_price,
+            exchange_time=_require_epoch_milliseconds(payload["E"], "event time"),
+            received_at_utc=_require_utc_datetime(
+                received_at_utc, "received_at_utc"
+            ),
         )
