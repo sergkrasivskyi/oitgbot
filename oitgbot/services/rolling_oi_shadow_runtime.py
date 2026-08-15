@@ -81,7 +81,8 @@ class RollingOIShadowRuntime:
         workers: int = 20,
         retention_minutes: float = 150.0,
         price_max_age_seconds: float = 5.0,
-        max_oi_age_seconds: float = 60.0,
+        observation_max_age_seconds: float = 60.0,
+        transaction_age_warning_seconds: float = 60.0,
         observation_5m_pct: float = 2.0,
         observation_20m_pct: float = 1.0,
         observation_60m_pct: float = 3.0,
@@ -98,7 +99,11 @@ class RollingOIShadowRuntime:
             raise ValueError("workers must be a positive integer")
         if retention_minutes < 120 or not math.isfinite(retention_minutes):
             raise ValueError("retention_minutes must be finite and at least 120")
-        if price_max_age_seconds <= 0 or max_oi_age_seconds <= 0:
+        if (
+            price_max_age_seconds <= 0
+            or observation_max_age_seconds <= 0
+            or transaction_age_warning_seconds <= 0
+        ):
             raise ValueError("freshness limits must be positive")
         thresholds = (
             observation_5m_pct,
@@ -114,7 +119,12 @@ class RollingOIShadowRuntime:
         self.cadence_seconds = float(cadence_seconds)
         self.workers = workers
         self.price_max_age_seconds = float(price_max_age_seconds)
-        self.max_oi_age_seconds = float(max_oi_age_seconds)
+        self.observation_max_age_seconds = float(
+            observation_max_age_seconds
+        )
+        self.transaction_age_warning_seconds = float(
+            transaction_age_warning_seconds
+        )
         self.observation_thresholds = {
             300: float(observation_5m_pct),
             1200: float(observation_20m_pct),
@@ -209,7 +219,9 @@ class RollingOIShadowRuntime:
                 max_workers=self.workers,
                 default_cadence_seconds=self.cadence_seconds,
                 price_max_age_seconds=self.price_max_age_seconds,
-                max_oi_age_seconds=self.max_oi_age_seconds,
+                transaction_age_warning_seconds=(
+                    self.transaction_age_warning_seconds
+                ),
             )
             self._rate_budget_state = BudgetState.SAFE.value
             self._last_cycle_state = "ready"
@@ -323,9 +335,12 @@ class RollingOIShadowRuntime:
             if latest is None:
                 continue
             latest_age = (
-                cycle.cycle_finished_at_utc - latest.oi_exchange_time
+                cycle.cycle_finished_at_utc - latest.observed_at_utc
             ).total_seconds()
-            if latest_age < 0 or latest_age > self.max_oi_age_seconds:
+            if (
+                latest_age < 0
+                or latest_age > self.observation_max_age_seconds
+            ):
                 continue
             for seconds in windows:
                 try:
@@ -497,8 +512,11 @@ class RollingOIShadowRuntime:
             latest = self.rolling_store.latest(row.symbol)
             if latest is None:
                 continue
-            latest_age = (self._clock() - latest.oi_exchange_time).total_seconds()
-            if latest_age < 0 or latest_age > self.max_oi_age_seconds:
+            latest_age = (self._clock() - latest.observed_at_utc).total_seconds()
+            if (
+                latest_age < 0
+                or latest_age > self.observation_max_age_seconds
+            ):
                 continue
             try:
                 rolling = self.calculator.calculate(

@@ -48,9 +48,9 @@ class RollingOIStore:
             history = self._samples.setdefault(sample.symbol, deque())
             if history:
                 latest = history[-1]
-                if sample.oi_exchange_time < latest.oi_exchange_time:
+                if sample.observed_at_utc < latest.observed_at_utc:
                     return False
-                if sample.oi_exchange_time == latest.oi_exchange_time:
+                if sample.observed_at_utc == latest.observed_at_utc:
                     if self._prefer_duplicate(sample, latest):
                         history[-1] = sample
                         return True
@@ -94,8 +94,8 @@ class RollingOIStore:
         if not history:
             return 0
         removed = 0
-        cutoff = history[-1].oi_exchange_time - self._retention
-        while history and history[0].oi_exchange_time < cutoff:
+        cutoff = history[-1].observed_at_utc - self._retention
+        while history and history[0].observed_at_utc < cutoff:
             history.popleft()
             removed += 1
         while len(history) > self.max_samples_per_symbol:
@@ -109,6 +109,8 @@ class RollingOIStore:
         existing: RollingOISample,
     ) -> bool:
         if candidate.oi_quantity != existing.oi_quantity:
+            return False
+        if candidate.oi_exchange_time != existing.oi_exchange_time:
             return False
 
         candidate_context = sum(

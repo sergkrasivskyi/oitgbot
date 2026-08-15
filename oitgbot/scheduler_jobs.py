@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 import time
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 from .config import settings
 from .models import OIRow
@@ -31,6 +36,11 @@ class SchedulerJobs:
 
         self._symbols_cache: list[str] = []
         self._symbols_cache_ts = 0.0
+        self._legacy_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="legacy-job",
+        )
+        self._closed = False
         self._symbols_cache_ttl = 3600  # 1 година
 
     def _get_symbols_cached(self) -> list[str]:
@@ -56,6 +66,23 @@ class SchedulerJobs:
 
             log.error("Failed to load symbols and cache is empty: %s", exc)
             return []
+
+    async def _run_legacy_blocking(
+        self, function: Callable[..., Any], *args: object
+    ) -> Any:
+        if self._closed:
+            raise RuntimeError("scheduler jobs are closed")
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._legacy_executor,
+            functools.partial(function, *args),
+        )
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        await asyncio.to_thread(self._legacy_executor.shutdown, wait=True)
 
     def get_symbols_cached(self) -> list[str]:
         """Return the legacy bot's cached eligible perpetual universe."""
@@ -107,7 +134,9 @@ class SchedulerJobs:
     async def job_impulses(self) -> None:
         job_started_utc = utc_now()
         try:
-            symbols_all = self._get_symbols_cached()
+            symbols_all = await self._run_legacy_blocking(
+                self._get_symbols_cached
+            )
             if not symbols_all:
                 log.warning("Impulse scan skipped: no symbols available")
                 return
@@ -118,13 +147,17 @@ class SchedulerJobs:
                 settings.impulse_threshold,
             )
 
-            scan_result = self.oi_scanner.scan_oi_5m_all(symbols_all)
+            scan_result = await self._run_legacy_blocking(
+                self.oi_scanner.scan_oi_5m_all, symbols_all
+            )
             all_rows = scan_result.rows
             errors = scan_result.errors
             log.info("OI_5m computed: rows=%d, errors=%d", len(all_rows), errors)
             self.oi_scanner.log_scan_diagnostics(scan_result)
             self.oi_scanner.log_top(all_rows, "OI_5m ALL (sorted)", n=10)
-            self._compare_shadow(300, all_rows)
+            await self._run_legacy_blocking(
+                self._compare_shadow, 300, all_rows
+            )
 
             impulses = [row for row in all_rows if row.oi_pct >= settings.impulse_threshold]
             self.oi_scanner.log_qualifying_diagnostics(impulses, scan_result)
@@ -151,7 +184,9 @@ class SchedulerJobs:
                 log.info("No impulses and fallback disabled/empty. Not sending.")
                 return
 
-            price_errors = self._fill_price_5m(rows_all)
+            price_errors = await self._run_legacy_blocking(
+                self._fill_price_5m, rows_all
+            )
             if price_errors:
                 log.warning("Impulse price fill completed with errors=%d", price_errors)
 
@@ -223,7 +258,9 @@ class SchedulerJobs:
     async def job_top(self) -> None:
         job_started_utc = utc_now()
         try:
-            symbols_all = self._get_symbols_cached()
+            symbols_all = await self._run_legacy_blocking(
+                self._get_symbols_cached
+            )
             if not symbols_all:
                 log.warning("TOP scan skipped: no symbols available")
                 return
@@ -234,13 +271,17 @@ class SchedulerJobs:
                 settings.top_threshold,
             )
 
-            scan_result = self.oi_scanner.scan_oi_20m_all(symbols_all)
+            scan_result = await self._run_legacy_blocking(
+                self.oi_scanner.scan_oi_20m_all, symbols_all
+            )
             all_rows = scan_result.rows
             errors = scan_result.errors
             log.info("OI_20m computed: rows=%d, errors=%d", len(all_rows), errors)
             self.oi_scanner.log_scan_diagnostics(scan_result)
             self.oi_scanner.log_top(all_rows, "OI_20m ALL (sorted)", n=10)
-            self._compare_shadow(1200, all_rows)
+            await self._run_legacy_blocking(
+                self._compare_shadow, 1200, all_rows
+            )
 
             rows_all = [row for row in all_rows if row.oi_pct >= settings.top_threshold]
             self.oi_scanner.log_qualifying_diagnostics(rows_all, scan_result)
@@ -254,7 +295,9 @@ class SchedulerJobs:
                 log.info("No TOP OI growth >= %.2f%%. Not sending.", settings.top_threshold)
                 return
 
-            price_errors = self._fill_price_20m(rows_all)
+            price_errors = await self._run_legacy_blocking(
+                self._fill_price_20m, rows_all
+            )
             if price_errors:
                 log.warning("TOP price fill completed with errors=%d", price_errors)
 

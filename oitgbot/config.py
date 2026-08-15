@@ -64,8 +64,16 @@ class Settings:
     rolling_oi_price_max_age_seconds: float = field(
         default_factory=lambda: _get_float("ROLLING_OI_PRICE_MAX_AGE_SECONDS", "5")
     )
-    rolling_oi_max_oi_age_seconds: float = field(
-        default_factory=lambda: _get_float("ROLLING_OI_MAX_OI_AGE_SECONDS", "60")
+    rolling_oi_observation_max_age_seconds: float = field(
+        default_factory=lambda: _get_float(
+            "ROLLING_OI_OBSERVATION_MAX_AGE_SECONDS",
+            os.environ.get("ROLLING_OI_MAX_OI_AGE_SECONDS", "60"),
+        )
+    )
+    rolling_oi_transaction_age_warning_seconds: float = field(
+        default_factory=lambda: _get_float(
+            "ROLLING_OI_TRANSACTION_AGE_WARNING_SECONDS", "60"
+        )
     )
     rolling_oi_5m_observation_pct: float = field(
         default_factory=lambda: _get_float("ROLLING_OI_5M_OBSERVATION_PCT", "2")
@@ -104,8 +112,14 @@ class Settings:
                 invalid.append("ROLLING_OI_RETENTION_MINUTES must be >= 120")
             if self.rolling_oi_price_max_age_seconds <= 0:
                 invalid.append("ROLLING_OI_PRICE_MAX_AGE_SECONDS must be > 0")
-            if self.rolling_oi_max_oi_age_seconds <= 0:
-                invalid.append("ROLLING_OI_MAX_OI_AGE_SECONDS must be > 0")
+            if self.rolling_oi_observation_max_age_seconds <= 0:
+                invalid.append(
+                    "ROLLING_OI_OBSERVATION_MAX_AGE_SECONDS must be > 0"
+                )
+            if self.rolling_oi_transaction_age_warning_seconds <= 0:
+                invalid.append(
+                    "ROLLING_OI_TRANSACTION_AGE_WARNING_SECONDS must be > 0"
+                )
             if invalid:
                 raise RuntimeError("Invalid rolling OI shadow config: " + "; ".join(invalid))
 

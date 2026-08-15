@@ -108,7 +108,7 @@ class CurrentOICollectorTests(IsolatedAsyncioTestCase):
         btc = rolling.latest("BTCUSDT")
         assert btc is not None
         self.assertEqual(NOW - timedelta(seconds=1), btc.oi_exchange_time)
-        self.assertEqual(NOW, btc.received_at_utc)
+        self.assertEqual(NOW, btc.observed_at_utc)
         self.assertEqual(50_000.0, btc.mark_price)
         self.assertEqual(5_000_000.0, btc.oi_value_usd)
 
@@ -131,12 +131,13 @@ class CurrentOICollectorTests(IsolatedAsyncioTestCase):
         self.assertEqual(3, result.samples_inserted)
         self.assertEqual(1, result.price_fresh)
         self.assertEqual(1, result.price_missing)
-        self.assertEqual(1, result.price_stale)
+        self.assertEqual(1, result.price_receipt_stale)
+        self.assertEqual(0, result.price_alignment_rejected)
         self.assertIsNotNone(rolling.latest("FRESHUSDT").mark_price)  # type: ignore[union-attr]
         self.assertIsNone(rolling.latest("MISSINGUSDT").mark_price)  # type: ignore[union-attr]
         self.assertIsNone(rolling.latest("STALEUSDT").mark_price)  # type: ignore[union-attr]
 
-    async def test_excessive_price_oi_skew_removes_only_price_context(self) -> None:
+    async def test_excessive_price_observation_skew_removes_only_price_context(self) -> None:
         api = FakeBinanceAPI({"BTCUSDT": current_oi("BTCUSDT", 100, NOW)})
         prices = PriceStateStore()
         add_price(
@@ -155,15 +156,75 @@ class CurrentOICollectorTests(IsolatedAsyncioTestCase):
         result = await collector.collect_cycle(["BTCUSDT"])
 
         self.assertEqual(1, result.samples_inserted)
-        self.assertEqual(1, result.price_stale)
-        self.assertEqual(6.0, result.price_oi_skew_seconds_abs_max)
+        self.assertEqual(1, result.price_alignment_rejected)
+        self.assertEqual(6.0, result.price_event_age_abs_max_s)
         self.assertIsNone(rolling.latest("BTCUSDT").mark_price)  # type: ignore[union-attr]
 
-    async def test_stale_and_future_oi_are_rejected_with_small_future_skew_allowed(self) -> None:
+    async def test_old_oi_transaction_time_does_not_reject_current_price(self) -> None:
+        api = FakeBinanceAPI(
+            {
+                "BTCUSDT": current_oi(
+                    "BTCUSDT", 100, NOW - timedelta(minutes=2)
+                )
+            }
+        )
+        prices = PriceStateStore()
+        add_price(prices, "BTCUSDT", 50_000, exchange_time=NOW, received_at=NOW)
+        rolling = RollingOIStore()
+        collector = CurrentOICollector(
+            api, prices, rolling, generous_budget(), clock=lambda: NOW
+        )
+        self.addAsyncCleanup(collector.close)
+
+        result = await collector.collect_cycle(["BTCUSDT"])
+
+        sample = rolling.latest("BTCUSDT")
+        assert sample is not None
+        self.assertEqual(1, result.samples_inserted)
+        self.assertEqual(1, result.old_transaction_time_count)
+        self.assertEqual(1, result.price_fresh)
+        self.assertEqual(120.0, result.price_oi_transaction_skew_abs_max_s)
+        self.assertEqual(50_000.0, sample.mark_price)
+
+    async def test_repeated_transaction_time_retains_each_observation(self) -> None:
+        class MutableClock:
+            current = NOW
+
+            def __call__(self) -> datetime:
+                return self.current
+
+        clock = MutableClock()
+        api = FakeBinanceAPI(
+            {"BTCUSDT": current_oi("BTCUSDT", 100, NOW)}
+        )
+        rolling = RollingOIStore()
+        collector = CurrentOICollector(
+            api,
+            PriceStateStore(),
+            rolling,
+            generous_budget(),
+            clock=clock,
+        )
+        self.addAsyncCleanup(collector.close)
+
+        first = await collector.collect_cycle(["BTCUSDT"])
+        clock.current = NOW + timedelta(seconds=30)
+        second = await collector.collect_cycle(["BTCUSDT"])
+
+        self.assertEqual(1, first.samples_inserted)
+        self.assertEqual(1, second.samples_inserted)
+        self.assertEqual(1, second.transaction_time_unchanged)
+        self.assertEqual(2, len(rolling.history("BTCUSDT")))
+        self.assertEqual(
+            [NOW, NOW + timedelta(seconds=30)],
+            [sample.observed_at_utc for sample in rolling.history("BTCUSDT")],
+        )
+
+    async def test_old_transaction_is_accepted_and_impossible_future_is_rejected(self) -> None:
         api = FakeBinanceAPI(
             {
                 "FRESHUSDT": current_oi("FRESHUSDT", 1, NOW - timedelta(seconds=60)),
-                "STALEUSDT": current_oi("STALEUSDT", 1, NOW - timedelta(seconds=61)),
+                "OLDUSDT": current_oi("OLDUSDT", 1, NOW - timedelta(seconds=120)),
                 "SMALLFUTUREUSDT": current_oi("SMALLFUTUREUSDT", 1, NOW + timedelta(seconds=5)),
                 "FUTUREUSDT": current_oi("FUTUREUSDT", 1, NOW + timedelta(seconds=6)),
             }
@@ -178,17 +239,29 @@ class CurrentOICollectorTests(IsolatedAsyncioTestCase):
         )
         self.addAsyncCleanup(collector.close)
 
-        result = await collector.collect_cycle(api.responses)
+        with self.assertLogs(
+            "oitgbot.services.current_oi_collector", level="INFO"
+        ) as captured:
+            result = await collector.collect_cycle(api.responses)
 
-        self.assertEqual(2, result.samples_inserted)
-        self.assertEqual(1, result.stale_oi_rejected)
+        self.assertEqual(3, result.samples_inserted)
+        self.assertEqual(1, result.old_transaction_time_count)
         self.assertEqual(1, result.future_oi_rejected)
+        self.assertEqual(-6.0, result.transaction_age_min_s)
+        self.assertEqual(27.5, result.transaction_age_median_s)
+        self.assertEqual(120.0, result.transaction_age_p95_s)
+        self.assertEqual(120.0, result.transaction_age_max_s)
         self.assertIsNotNone(rolling.latest("FRESHUSDT"))
         self.assertIsNotNone(rolling.latest("SMALLFUTUREUSDT"))
-        self.assertIsNone(rolling.latest("STALEUSDT"))
+        self.assertIsNotNone(rolling.latest("OLDUSDT"))
         self.assertIsNone(rolling.latest("FUTUREUSDT"))
+        summary = "\n".join(captured.output)
+        self.assertIn("transaction_age_median_s=27.500", summary)
+        self.assertIn("transaction_age_p95_s=120.000", summary)
+        self.assertIn("price_receipt_stale=0", summary)
+        self.assertIn("price_alignment_rejected=0", summary)
 
-    async def test_partial_failures_preserve_eight_successes(self) -> None:
+    async def test_partial_failure_preserves_successes_and_old_transaction(self) -> None:
         responses: dict[str, object] = {
             f"S{i}USDT": current_oi(f"S{i}USDT", 100 + i, NOW)
             for i in range(8)
@@ -210,12 +283,13 @@ class CurrentOICollectorTests(IsolatedAsyncioTestCase):
 
         result = await collector.collect_cycle(responses)
 
-        self.assertEqual(8, result.successful_samples)
-        self.assertEqual(8, result.samples_inserted)
-        self.assertEqual(2, result.failed_symbols)
-        self.assertEqual(8, len(rolling.symbols()))
+        self.assertEqual(9, result.successful_samples)
+        self.assertEqual(9, result.samples_inserted)
+        self.assertEqual(1, result.failed_symbols)
+        self.assertEqual(9, len(rolling.symbols()))
+        self.assertEqual(1, result.old_transaction_time_count)
         self.assertEqual(
-            {"request_error": 1, "stale_oi": 1}, dict(result.failure_counts)
+            {"request_error": 1}, dict(result.failure_counts)
         )
 
     async def test_malformed_client_model_is_isolated(self) -> None:

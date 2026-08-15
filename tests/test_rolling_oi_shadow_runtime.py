@@ -43,11 +43,13 @@ def cycle_result(
         oi_requests_attempted=requested,
         successful_samples=successful,
         failed_symbols=failed,
-        stale_oi_rejected=0,
         future_oi_rejected=0,
+        old_transaction_time_count=0,
+        transaction_time_unchanged=0,
         price_fresh=successful,
         price_missing=0,
-        price_stale=0,
+        price_receipt_stale=0,
+        price_alignment_rejected=0,
         samples_inserted=inserted,
         samples_ignored_duplicate_or_out_of_order=0,
         timed_out_symbols=0,
@@ -58,10 +60,13 @@ def cycle_result(
         skip_reason=None,
         rate_budget_state="SAFE",
         failure_counts=(),
-        oi_age_seconds_min=0.1,
-        oi_age_seconds_max=0.2,
-        price_age_seconds_max=0.1,
-        price_oi_skew_seconds_abs_max=0.1,
+        transaction_age_min_s=0.1,
+        transaction_age_median_s=0.1,
+        transaction_age_p95_s=0.2,
+        transaction_age_max_s=0.2,
+        price_receipt_age_max_s=0.1,
+        price_event_age_abs_max_s=0.1,
+        price_oi_transaction_skew_abs_max_s=0.1,
     )
 
 
@@ -133,7 +138,8 @@ class ShadowConfigTests(TestCase):
         self.assertEqual(20, value.rolling_oi_workers)
         self.assertEqual(150, value.rolling_oi_retention_minutes)
         self.assertEqual(5, value.rolling_oi_price_max_age_seconds)
-        self.assertEqual(60, value.rolling_oi_max_oi_age_seconds)
+        self.assertEqual(60, value.rolling_oi_observation_max_age_seconds)
+        self.assertEqual(60, value.rolling_oi_transaction_age_warning_seconds)
 
     def test_invalid_enabled_shadow_config_fails_clearly(self) -> None:
         value = Settings(
@@ -372,8 +378,8 @@ class ShadowRuntimeEvaluationTests(TestCase):
                 RollingOISample(
                     symbol="BTCUSDT",
                     oi_quantity=quantity,
+                    observed_at_utc=timestamp,
                     oi_exchange_time=timestamp,
-                    received_at_utc=timestamp,
                     mark_price=100 + minute,
                     price_exchange_time=timestamp,
                 )

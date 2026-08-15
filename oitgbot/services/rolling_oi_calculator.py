@@ -37,14 +37,14 @@ def _select_at_or_before(
     tolerance_seconds: float,
 ) -> RollingOISample | None:
     for sample in reversed(history):
-        if sample.oi_exchange_time <= target:
-            offset = (target - sample.oi_exchange_time).total_seconds()
+        if sample.observed_at_utc <= target:
+            offset = (target - sample.observed_at_utc).total_seconds()
             return sample if offset <= tolerance_seconds else None
     return None
 
 
 class RollingOICalculator:
-    """Calculate deterministic rolling windows from exchange-time history."""
+    """Calculate deterministic rolling windows from observation-time history."""
 
     def __init__(
         self,
@@ -79,13 +79,13 @@ class RollingOICalculator:
             return self._unavailable(symbol, window_seconds, "no samples")
 
         latest = history[-1]
-        target = latest.oi_exchange_time - timedelta(seconds=window_seconds)
+        target = latest.observed_at_utc - timedelta(seconds=window_seconds)
         baseline = _select_at_or_before(
             history, target, self.tolerance_seconds
         )
         if baseline is None:
             before_target = any(
-                sample.oi_exchange_time <= target for sample in history
+                sample.observed_at_utc <= target for sample in history
             )
             reason = (
                 "baseline outside tolerance"
@@ -100,9 +100,9 @@ class RollingOICalculator:
                 target=target,
             )
 
-        offset = (target - baseline.oi_exchange_time).total_seconds()
+        offset = (target - baseline.observed_at_utc).total_seconds()
         actual_window = (
-            latest.oi_exchange_time - baseline.oi_exchange_time
+            latest.observed_at_utc - baseline.observed_at_utc
         ).total_seconds()
         if baseline.oi_quantity == 0:
             return self._unavailable(
@@ -134,8 +134,8 @@ class RollingOICalculator:
             window_seconds=window_seconds,
             available=True,
             unavailable_reason=None,
-            latest_timestamp=latest.oi_exchange_time,
-            baseline_timestamp=baseline.oi_exchange_time,
+            latest_timestamp=latest.observed_at_utc,
+            baseline_timestamp=baseline.observed_at_utc,
             target_timestamp=target,
             actual_window_seconds=actual_window,
             baseline_offset_seconds=offset,
@@ -189,8 +189,8 @@ class RollingOICalculator:
             window_seconds=window_seconds,
             available=False,
             unavailable_reason=reason,
-            latest_timestamp=latest.oi_exchange_time if latest else None,
-            baseline_timestamp=baseline.oi_exchange_time if baseline else None,
+            latest_timestamp=latest.observed_at_utc if latest else None,
+            baseline_timestamp=baseline.observed_at_utc if baseline else None,
             target_timestamp=target,
             actual_window_seconds=actual_window_seconds,
             baseline_offset_seconds=baseline_offset_seconds,
@@ -245,7 +245,7 @@ class AccumulationAnalyzer:
             )
 
         history = store.history(symbol)
-        latest_time = history[-1].oi_exchange_time
+        latest_time = history[-1].observed_at_utc
         ten_minute_anchors = self._anchors(
             history, latest_time, window_seconds, 600
         )

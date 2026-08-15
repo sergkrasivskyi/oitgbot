@@ -9,7 +9,7 @@ This design replaces historical five-minute Open Interest buckets as the primary
 The engine must:
 
 - react faster than the legacy five-minute historical-bucket scanner;
-- define deterministic 5m, 20m, 60m, and 120m windows from exchange timestamps;
+- define deterministic 5m, 20m, 60m, and 120m windows from observation timestamps;
 - keep request usage within runtime Binance limits with explicit headroom;
 - avoid blocking the asyncio event loop;
 - reuse the existing formatter, Telegram sender, symbol eligibility rules, and configuration where their semantics still fit;
@@ -86,7 +86,6 @@ CurrentOIReading(
     symbol: str,
     oi_quantity: Decimal,
     oi_exchange_time: datetime,
-    received_at_utc: datetime,
 )
 ```
 
@@ -95,9 +94,10 @@ Parsing rules:
 - `openInterest` must parse to a finite, non-negative `Decimal`;
 - Binance `time` must parse to a timezone-aware UTC datetime;
 - missing/malformed fields return a typed parse failure, not zero;
-- `received_at_utc` is captured after the response arrives;
+- the collector captures `observed_at_utc` immediately after the validated response arrives;
 - responses more than 5 seconds in the future relative to local receipt are rejected and logged;
-- responses older than `max(2 * cadence, 60 seconds)` are stale and not inserted.
+- older transaction timestamps remain valid present-OI observations and feed
+  cycle-level transaction-age diagnostics.
 
 ### Price state
 
@@ -118,8 +118,8 @@ The store also exposes stream-level `connected`, `last_message_received_at`, rec
 RollingOISample(
     symbol: str,
     oi_quantity: Decimal,
+    observed_at_utc: datetime,
     oi_exchange_time: datetime,
-    received_at_utc: datetime,
     mark_price: Decimal | None,
     price_exchange_time: datetime | None,
     oi_value_usd: Decimal | None,
@@ -128,9 +128,9 @@ RollingOISample(
 
 Every field has a direct purpose:
 
-- `oi_exchange_time` is the canonical ordering and rolling-window timestamp;
-- `received_at_utc` measures OI response latency and freshness;
-- `price_exchange_time` exposes non-atomic price/OI skew;
+- `observed_at_utc` is the canonical ordering and rolling-window timestamp;
+- `oi_exchange_time` preserves Binance's current-OI transaction time for diagnostics;
+- `price_exchange_time` exposes mark-price event timing;
 - `mark_price` is the freshest acceptable WebSocket price captured when the OI reading is accepted;
 - `oi_value_usd` is derived only when price is usable: `oi_quantity * mark_price`.
 
@@ -139,14 +139,15 @@ No `collector_cycle_time` is stored per sample. Cycle ID/start/end belong to `Co
 Price and OI are not atomic. Their skew is:
 
 ```text
-price_oi_skew_s = price_exchange_time - oi_exchange_time
+price_observation_age_s = observed_at_utc - price_exchange_time
+price_transaction_skew_s = price_exchange_time - oi_exchange_time  # diagnostic only
 ```
 
 A price is attachable when both conditions hold:
 
 ```text
-received_at_utc - price_exchange_time <= 5 seconds
-abs(price_exchange_time - oi_exchange_time) <= 5 seconds
+observed_at_utc - price_received_at_utc <= 5 seconds
+abs(observed_at_utc - price_exchange_time) <= 5 seconds
 ```
 
 If either condition fails, the sample retains valid OI quantity but stores `mark_price`, `price_exchange_time`, and `oi_value_usd` as unavailable for rolling USD/price calculations. The raw price state remains available for diagnostics.
@@ -222,9 +223,10 @@ Collector defaults:
 | HTTP retry behavior | Existing `BinanceAPI` retry behavior remains unchanged in Task 10 |
 | Cycle timeout | `min(20 seconds, 0.8 * cadence)` |
 | Overlap | Forbidden; skip the next tick rather than queue another cycle |
-| Maximum accepted current-OI age | 60 seconds, configurable |
+| Maximum accepted observation age at evaluation | 60 seconds, configurable |
+| Old transaction-time warning | 60 seconds, diagnostic only |
 | Future OI clock tolerance | 5 seconds, configurable |
-| Price receipt age and OI/price exchange-time skew | At most 5 seconds each, configurable |
+| Price receipt age and price-event/observation skew | At most 5 seconds each, configurable |
 | Projected retry reserve | 5% of symbol requests per cycle by default, configurable; this budgets existing client retries but does not change their behavior |
 
 Cycle flow:
@@ -243,7 +245,7 @@ refresh/obtain eligible symbols
   -> publish one collector summary
 ```
 
-One failed symbol does not invalidate successes. Failed, malformed, future, or stale OI is never inserted as zero. A failed cycle does not erase existing store history.
+One failed symbol does not invalidate successes. Failed, malformed, or materially future OI is never inserted as zero. An old valid transaction timestamp does not invalidate a freshly obtained present-OI observation. A failed cycle does not erase existing store history.
 
 Cycle health:
 
@@ -328,7 +330,7 @@ Basic structure:
 dict[str, deque[RollingOISample]]
 ```
 
-Retention is 150 minutes based on `oi_exchange_time`. This covers the 120-minute product window plus tolerance and operational headroom. Pruning occurs after each successful insertion and during explicit maintenance.
+Retention is 150 minutes based on `observed_at_utc`. This covers the 120-minute product window plus tolerance and operational headroom. Pruning occurs after each successful insertion and during explicit maintenance.
 
 Approximate retained counts:
 
@@ -343,13 +345,14 @@ The hard per-symbol cap is `ceil(retention / configured_cadence) + 2`. At the 30
 
 Insertion rules:
 
-- order by `oi_exchange_time`, not local arrival order;
-- same exchange timestamp and identical or less-complete data: ignore as an idempotent duplicate;
-- same exchange timestamp and consistent quantity: replace only when the new sample adds richer price context;
-- same exchange timestamp with conflicting quantity: ignore;
+- order by `observed_at_utc`;
+- repeated Binance transaction timestamps remain separate valid observations;
+- same observation timestamp and identical or less-complete data: ignore as an idempotent duplicate;
+- same observation timestamp and consistent quantity: replace only when the new sample adds richer price context;
+- same observation timestamp with conflicting quantity: ignore;
 - older/out-of-order samples: ignore so accepted history never moves backward;
 - older than retention: reject;
-- future beyond 5 seconds or stale beyond the collector freshness limit: reject;
+- materially future transaction timestamps reject; old transaction timestamps warn but remain valid;
 - failed cycles insert nothing for failed symbols;
 - added symbols start an empty deque and warm up naturally;
 - removed symbols become inactive immediately, are excluded from reports, and are purged after retention.
@@ -359,12 +362,12 @@ Insertion rules:
 For window `W` (300, 1,200, 3,600, or 7,200 seconds):
 
 1. Select the latest valid, fresh sample for the symbol.
-2. Define `target_time = latest.oi_exchange_time - W`.
-3. Select the baseline as the latest valid sample whose `oi_exchange_time <= target_time`.
+2. Define `target_time = latest.observed_at_utc - W`.
+3. Select the baseline as the latest valid sample whose `observed_at_utc <= target_time`.
 4. Accept it only when:
 
 ```text
-target_time - baseline.oi_exchange_time <= tolerance
+target_time - baseline.observed_at_utc <= tolerance
 ```
 
 5. Otherwise return `window unavailable: no baseline within tolerance`.
@@ -404,7 +407,7 @@ Rule A (latest sample at or before target) is selected. Rule B (nearest either s
 The latest sample itself must also be fresh at evaluation time:
 
 ```text
-evaluation_utc - latest.oi_exchange_time <= max(60 seconds, 2 * cadence)
+evaluation_utc - latest.observed_at_utc <= max(60 seconds, 2 * cadence)
 ```
 
 ## Rolling calculations and price alignment
@@ -423,7 +426,7 @@ Outputs:
 
 Missing, malformed, non-finite, or zero baselines return an explicit unavailable reason. They never return a synthetic `0.0%`.
 
-Price change uses the prices captured on the same latest and baseline OI samples. This aligns price and OI windows as closely as possible without claiming atomic sampling. Residual skew is visible through both samples' `price_exchange_time - oi_exchange_time`; the attached-price rule caps each absolute skew at 5 seconds.
+Price change uses the prices captured on the same latest and baseline OI observations. A price is attached when its receipt and event timestamps are fresh relative to `observed_at_utc`. The possibly older OI transaction timestamp does not reject a current price. `price_exchange_time - oi_exchange_time` remains diagnostic metadata only.
 
 ## Slow and long accumulation quality
 
@@ -433,20 +436,34 @@ Missing anchors reduce coverage and do not count as negative blocks. A flat path
 
 ## Clock semantics
 
+### Live-validated canonical timestamp decision
+
+Task 11 live shadow operation showed that `/fapi/v1/openInterest` returns the
+present OI quantity with transaction timestamps that may be older or repeated
+across polling cycles. Those responses are still distinct observations that the
+bot obtained at different times. Consequently, Binance transaction time is not
+a reliable regular sampling grid and cannot be the rolling clock.
+
+The canonical rolling timestamp is `observed_at_utc`, captured separately for
+each symbol immediately after its successful validated REST response. Binance
+`oi_exchange_time` remains preserved for transaction-age distributions,
+unchanged-transaction counts, upstream diagnostics, and materially impossible
+future-time protection.
+
 Four clocks remain distinct:
 
-- `oi_exchange_time`: canonical sample ordering, target, and baseline clock;
+- `observed_at_utc`: canonical sample ordering, target, and baseline clock, captured per symbol immediately after a validated REST response;
+- `oi_exchange_time`: Binance transaction-time diagnostic metadata;
 - `price_exchange_time`: price association and skew diagnostics;
-- `received_at_utc`: local network latency/freshness monitoring;
 - collector cycle start/finish: operational scheduling and duration only.
 
 Behavior:
 
 - OI more than 5 seconds in the future relative to receipt is rejected;
 - OI up to 5 seconds in the future is retained with a clock-skew warning and must normalize on later cycles;
-- OI older than `max(60 seconds, 2 * cadence)` is rejected as stale;
-- price/OI skew over 5 seconds removes only the sample's price/USD fields;
-- local wall clock must be UTC-aware and monitored against Binance exchange time; repeated future/stale anomalies put the collector in degraded clock-health state and suppress signals until resolved.
+- old OI transaction time is counted and summarized but does not reject present OI;
+- stale price receipt or excessive price-event/observation skew removes only price/USD fields;
+- local wall clock must be UTC-aware; a materially future Binance timestamp remains an explicit corruption/clock-skew rejection.
 
 ## Warm-up and restart
 
@@ -529,7 +546,7 @@ Impulse and TOP consume the same collected samples, eliminating duplicate histor
 | Request timeout | Isolate symbol; allow one retry only if transient and budget permits |
 | HTTP 429 | Stop retries, honor server delay, enter budget backoff |
 | HTTP 418 | Stop polling and enter protection state until ban/recovery criteria expire |
-| Stale/future OI time | Reject sample, warn, retain old valid history |
+| Old/future OI transaction time | Accept and summarize old transaction age; reject only materially impossible future time |
 | Malformed OI | Typed parse failure; never coerce to zero |
 | Missing/stale price | Store OI quantity; leave price and derived USD unavailable |
 | WebSocket disconnect | Continue OI quantity collection; reconnect price stream with backoff |
@@ -544,11 +561,14 @@ Normal operation emits summaries, state changes, and candidate details—not one
 
 ### `OI_COLLECTOR_SUMMARY`
 
-Cycle start/finish, elapsed, cadence, requested/success/failed counts, health classification, concurrency, timeouts, estimated/reserved/observed budget, and min/median/p95/max OI age.
+Cycle start/finish, elapsed, requested/success/failed counts, timeouts, budget
+state, old/unchanged transaction counts, min/median/p95/max transaction age,
+and distinct fresh/missing/receipt-stale/alignment-rejected price counts.
 
 ### `OI_SAMPLE_WARNING`
 
-Only malformed, stale, future, duplicate-conflict, or out-of-order cases. Include symbol, exchange time, receipt time, age, and reason.
+Only malformed, materially future, duplicate-conflict, or out-of-order cases.
+Old transaction time is summarized rather than emitted once per symbol.
 
 ### `ROLLING_OI_DIAG`
 
@@ -657,7 +677,19 @@ ownership and provide only a bounded comparison hook. HTTP 429 enters a minimum
 60-second polling backoff; HTTP 418 stops shadow polling. Shutdown stops the
 periodic task, drains/closes the collector executor, then stops the WebSocket.
 
-### Task 12 — Rolling impulse state machine
+### Task 12 — Observation timing and legacy event-loop stabilization
+
+Rolling storage, retention, exact-window baselines, and long-window anchors use
+`observed_at_utc`. Price receipt/event freshness is evaluated against that same
+observation context; OI transaction/price skew is diagnostic only. Legacy symbol
+discovery, full-market scans, bounded internal scanner pools, price fill, and
+shadow comparison execute through one application-owned single-worker legacy
+executor. The outer worker only waits for each blocking phase and serializes
+colliding legacy jobs; the scanner's existing ten-worker pool is unchanged, so
+this does not create another per-symbol executor or alter legacy
+formulas, schedules, formatting, routing, or Telegram ownership.
+
+### Follow-up — Rolling impulse state machine
 
 Implement crossing, hysteresis re-arm, reversal, event IDs, send-independent state, configuration gating, and replay tests. Still shadow-only.
 
@@ -701,7 +733,7 @@ Required tests:
 14. quantity-change calculation and zero baseline failure;
 15. USD-change calculation and missing-price unavailability;
 16. aligned sample-price change and skew reporting;
-17. stale/future OI rejection;
+17. old transaction-time acceptance and materially future-time rejection;
 18. valid quantity insertion with missing price;
 19. positive and optional negative threshold crossing;
 20. no repeat while above threshold;
@@ -725,16 +757,16 @@ Required tests:
 5. **Base collector cadence:** configurable, default 30 seconds. A 20-second cadence is **VALIDATION REQUIRED** under the documented budget and cycle-duration gates.
 6. **Adaptive fast polling in initial release:** no; interfaces permit a bounded future watch set.
 7. **Rolling retention:** 150 minutes plus a cadence-derived hard sample cap (302 samples per symbol at the 30-second default).
-8. **Rolling baseline rule:** for 5m/20m/60m/120m, use the latest valid sample at or before `latest.oi_exchange_time - window`, within tolerance; no future-side selection or interpolation.
+8. **Rolling baseline rule:** for 5m/20m/60m/120m, use the latest valid sample at or before `latest.observed_at_utc - window`, within tolerance; no future-side selection or interpolation.
 9. **Long accumulation quality:** 60m/120m results expose persistence, trend efficiency and direction, positive-magnitude maximum drawdown, 5m impulse concentration, and coverage. Hard quality thresholds are **VALIDATION REQUIRED**.
 10. **Baseline tolerance:** `max(60 seconds, 2 * configured base cadence)` for all supported windows.
-11. **Canonical sample timestamp:** Binance `oi_exchange_time`; receipt/cycle clocks are diagnostic only.
+11. **Canonical sample timestamp:** per-request `observed_at_utc`; Binance `oi_exchange_time` is transaction-time diagnostic metadata and may repeat without collapsing observations.
 12. **Warm-up/restart strategy:** cold in-memory warm-up based on actual acceptable baseline availability; no historical/current semantic mixing.
 13. **5m alert re-arm strategy:** hysteresis at `0.60 * threshold` (3% for a 5% threshold), direct reversal supported, no fixed cooldown initially; shadow validation required.
 14. **20m TOP schedule behavior:** retain `minute=0,20,40`, `second=10`; read the rolling store and never trigger collection.
 15. **OI collector concurrency approach:** reuse the synchronous client through an application-owned bounded executor, default 20 workers; never block the event loop.
 16. **Rolling evaluation timing:** after each bounded full-market cycle in Phase 1; per-symbol immediate evaluation remains an optional later optimization.
 17. **Rate-limit safety policy:** runtime limit parsing, normal usage capped at 70%, at least 30% reserve, primary collector priority, 429 backoff, and 418 protection stop.
-18. **WebSocket stale-data policy:** stream stale/reconnect after 5 seconds without valid frames; per-symbol price attachable only when age and OI skew are each at most 5 seconds; OI quantity remains valid without price.
+18. **WebSocket stale-data policy:** stream stale/reconnect after 5 seconds without valid frames; per-symbol price attachable only when receipt and event timestamps are fresh against observation time; OI quantity remains valid without price.
 19. **Shadow-mode cutover criteria:** at least 7 consecutive days and 30 candidates plus all nine documented quality/operational gates; **VALIDATION REQUIRED** in Task 13.
 20. **Role of historical `openInterestHist`:** diagnostics, live probe, bounded shadow comparison, manual debugging, and explicitly labelled fallback only; never seed or drive the primary rolling signal after cutover.

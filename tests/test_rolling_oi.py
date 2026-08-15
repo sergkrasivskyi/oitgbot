@@ -21,16 +21,16 @@ def sample(
     *,
     symbol: str = "BTCUSDT",
     price: float | None = None,
-    received_delay_seconds: float = 1,
+    oi_exchange_time: datetime | None = None,
 ) -> RollingOISample:
-    exchange_time = START + timedelta(minutes=minute)
+    observed_at = START + timedelta(minutes=minute)
     return RollingOISample(
         symbol=symbol,
         oi_quantity=quantity,
-        oi_exchange_time=exchange_time,
-        received_at_utc=exchange_time + timedelta(seconds=received_delay_seconds),
+        observed_at_utc=observed_at,
+        oi_exchange_time=oi_exchange_time or observed_at,
         mark_price=price,
-        price_exchange_time=exchange_time if price is not None else None,
+        price_exchange_time=observed_at if price is not None else None,
     )
 
 
@@ -70,15 +70,15 @@ class RollingOISampleTests(TestCase):
             RollingOISample(
                 symbol="BTCUSDT",
                 oi_quantity=1,
+                observed_at_utc=START,
                 oi_exchange_time=datetime(2024, 1, 1),
-                received_at_utc=START,
             )
-        with self.assertRaisesRegex(ValueError, "received_at_utc"):
+        with self.assertRaisesRegex(ValueError, "observed_at_utc"):
             RollingOISample(
                 symbol="BTCUSDT",
                 oi_quantity=1,
+                observed_at_utc=datetime(2024, 1, 1),
                 oi_exchange_time=START,
-                received_at_utc=datetime(2024, 1, 1),
             )
 
     def test_rejects_invalid_optional_values(self) -> None:
@@ -86,16 +86,16 @@ class RollingOISampleTests(TestCase):
             RollingOISample(
                 symbol="BTCUSDT",
                 oi_quantity=1,
+                observed_at_utc=START,
                 oi_exchange_time=START,
-                received_at_utc=START,
                 mark_price=0,
             )
         with self.assertRaisesRegex(ValueError, "oi_value_usd"):
             RollingOISample(
                 symbol="BTCUSDT",
                 oi_quantity=1,
+                observed_at_utc=START,
                 oi_exchange_time=START,
-                received_at_utc=START,
                 oi_value_usd=math.inf,
             )
 
@@ -154,7 +154,7 @@ class RollingOIStoreTests(TestCase):
         self.assertEqual(3, len(changed))
         self.assertEqual(2, len(store.history("BTCUSDT")))
 
-    def test_retention_prunes_by_latest_exchange_time(self) -> None:
+    def test_retention_prunes_by_latest_observation_time(self) -> None:
         store = RollingOIStore(retention_minutes=150, max_samples_per_symbol=1_000)
         store.add(sample(0, 100))
         store.add(sample(150, 101))
@@ -193,6 +193,22 @@ class RollingOIStoreTests(TestCase):
         with self.assertRaises(TypeError):
             store.add(object())  # type: ignore[arg-type]
 
+    def test_repeated_transaction_timestamp_is_not_a_duplicate_observation(self) -> None:
+        store = RollingOIStore()
+        transaction_time = START - timedelta(minutes=2)
+
+        self.assertTrue(
+            store.add(sample(0, 100, oi_exchange_time=transaction_time))
+        )
+        self.assertTrue(
+            store.add(sample(0.5, 100, oi_exchange_time=transaction_time))
+        )
+
+        history = store.history("BTCUSDT")
+        self.assertEqual(2, len(history))
+        self.assertEqual(transaction_time, history[0].oi_exchange_time)
+        self.assertEqual(transaction_time, history[1].oi_exchange_time)
+
 
 class RollingOICalculatorTests(TestCase):
     def setUp(self) -> None:
@@ -208,6 +224,48 @@ class RollingOICalculatorTests(TestCase):
         self.assertEqual(10.0, result.oi_quantity_change_pct)
         self.assertEqual(300.0, result.actual_window_seconds)
         self.assertEqual(0.0, result.baseline_offset_seconds)
+
+    def test_5m_window_uses_observations_when_transaction_time_never_changes(self) -> None:
+        transaction_time = START - timedelta(minutes=3)
+        store = RollingOIStore()
+        for half_minute in range(11):
+            store.add(
+                sample(
+                    half_minute / 2,
+                    100 + half_minute,
+                    oi_exchange_time=transaction_time,
+                )
+            )
+
+        result = self.calculator.calculate_5m(store, "BTCUSDT")
+
+        self.assertTrue(result.available)
+        self.assertEqual(11, len(store.history("BTCUSDT")))
+        self.assertEqual(START, result.baseline_timestamp)
+        self.assertEqual(START + timedelta(minutes=5), result.latest_timestamp)
+        self.assertEqual(10.0, result.oi_quantity_change_pct)
+
+    def test_all_supported_windows_use_observation_time(self) -> None:
+        transaction_time = START - timedelta(minutes=3)
+        for minutes in (5, 20, 60, 120):
+            with self.subTest(minutes=minutes):
+                store = RollingOIStore()
+                store.add(sample(0, 100, oi_exchange_time=transaction_time))
+                store.add(
+                    sample(
+                        minutes,
+                        110,
+                        oi_exchange_time=transaction_time,
+                    )
+                )
+
+                result = self.calculator.calculate(
+                    store, "BTCUSDT", minutes * 60
+                )
+
+                self.assertTrue(result.available)
+                self.assertEqual(minutes * 60, result.actual_window_seconds)
+                self.assertEqual(10.0, result.oi_quantity_change_pct)
 
     def test_selects_baseline_before_target_not_future_side(self) -> None:
         store = populated_store([(0, 100), (1, 999), (5.5, 110)])

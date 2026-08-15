@@ -32,7 +32,12 @@ def build_shadow_runtime(
         workers=settings.rolling_oi_workers,
         retention_minutes=settings.rolling_oi_retention_minutes,
         price_max_age_seconds=settings.rolling_oi_price_max_age_seconds,
-        max_oi_age_seconds=settings.rolling_oi_max_oi_age_seconds,
+        observation_max_age_seconds=(
+            settings.rolling_oi_observation_max_age_seconds
+        ),
+        transaction_age_warning_seconds=(
+            settings.rolling_oi_transaction_age_warning_seconds
+        ),
         observation_5m_pct=settings.rolling_oi_5m_observation_pct,
         observation_20m_pct=settings.rolling_oi_20m_observation_pct,
         observation_60m_pct=settings.rolling_oi_60m_observation_pct,
@@ -48,6 +53,7 @@ async def main_async() -> None:
     scheduler: AsyncIOScheduler | None = None
     binance_api: BinanceAPI | None = None
     shadow_runtime: RollingOIShadowRuntime | None = None
+    jobs: SchedulerJobs | None = None
 
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -157,6 +163,11 @@ async def main_async() -> None:
                 if scheduler.running:
                     scheduler.shutdown(wait=False)
                     log.info("Scheduler stopped")
+
+        if jobs is not None:
+            with contextlib.suppress(Exception):
+                await jobs.close()
+                log.info("Legacy job executor stopped")
 
         if binance_api is not None:
             with contextlib.suppress(Exception):

@@ -225,12 +225,12 @@ def _require_finite_number(
 
 @dataclass(frozen=True, slots=True)
 class RollingOISample:
-    """One validated current-OI observation ordered by exchange time."""
+    """One validated current-OI observation ordered by local observation time."""
 
     symbol: str
     oi_quantity: float
+    observed_at_utc: datetime
     oi_exchange_time: datetime
-    received_at_utc: datetime
     mark_price: float | None = None
     price_exchange_time: datetime | None = None
     oi_value_usd: float | None = None
@@ -240,11 +240,11 @@ class RollingOISample:
             raise ValueError("symbol must be a non-empty string")
 
         quantity = _require_finite_number(self.oi_quantity, "oi_quantity")
+        observed_at = _require_utc_datetime(
+            self.observed_at_utc, "observed_at_utc"
+        )
         oi_time = _require_utc_datetime(
             self.oi_exchange_time, "oi_exchange_time"
-        )
-        received_at = _require_utc_datetime(
-            self.received_at_utc, "received_at_utc"
         )
 
         mark_price = self.mark_price
@@ -268,8 +268,8 @@ class RollingOISample:
             )
 
         object.__setattr__(self, "oi_quantity", quantity)
+        object.__setattr__(self, "observed_at_utc", observed_at)
         object.__setattr__(self, "oi_exchange_time", oi_time)
-        object.__setattr__(self, "received_at_utc", received_at)
         object.__setattr__(self, "mark_price", mark_price)
         object.__setattr__(self, "price_exchange_time", price_time)
         object.__setattr__(self, "oi_value_usd", oi_value_usd)

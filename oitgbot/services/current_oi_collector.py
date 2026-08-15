@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import statistics
 import threading
 import time
 from collections import Counter
@@ -47,11 +48,13 @@ class CurrentOICycleResult:
     oi_requests_attempted: int
     successful_samples: int
     failed_symbols: int
-    stale_oi_rejected: int
     future_oi_rejected: int
+    old_transaction_time_count: int
+    transaction_time_unchanged: int
     price_fresh: int
     price_missing: int
-    price_stale: int
+    price_receipt_stale: int
+    price_alignment_rejected: int
     samples_inserted: int
     samples_ignored_duplicate_or_out_of_order: int
     timed_out_symbols: int
@@ -62,16 +65,19 @@ class CurrentOICycleResult:
     skip_reason: str | None
     rate_budget_state: str
     failure_counts: tuple[tuple[str, int], ...]
-    oi_age_seconds_min: float | None
-    oi_age_seconds_max: float | None
-    price_age_seconds_max: float | None
-    price_oi_skew_seconds_abs_max: float | None
+    transaction_age_min_s: float | None
+    transaction_age_median_s: float | None
+    transaction_age_p95_s: float | None
+    transaction_age_max_s: float | None
+    price_receipt_age_max_s: float | None
+    price_event_age_abs_max_s: float | None
+    price_oi_transaction_skew_abs_max_s: float | None
 
 
 @dataclass(frozen=True, slots=True)
 class _FetchedOI:
     reading: CurrentOpenInterest
-    received_at_utc: datetime
+    observed_at_utc: datetime
 
 
 @dataclass(slots=True)
@@ -79,20 +85,23 @@ class _CycleStats:
     attempted: int = 0
     completed: int = 0
     successful_samples: int = 0
-    stale_oi_rejected: int = 0
     future_oi_rejected: int = 0
+    old_transaction_time_count: int = 0
+    transaction_time_unchanged: int = 0
     price_fresh: int = 0
     price_missing: int = 0
-    price_stale: int = 0
+    price_receipt_stale: int = 0
+    price_alignment_rejected: int = 0
     samples_inserted: int = 0
     samples_ignored: int = 0
     timed_out_symbols: int = 0
     http_429_errors: int = 0
     http_418_errors: int = 0
     failures: Counter[str] = field(default_factory=Counter)
-    oi_ages: list[float] = field(default_factory=list)
-    price_ages: list[float] = field(default_factory=list)
-    price_oi_skews: list[float] = field(default_factory=list)
+    transaction_ages: list[float] = field(default_factory=list)
+    price_receipt_ages: list[float] = field(default_factory=list)
+    price_event_ages_abs: list[float] = field(default_factory=list)
+    price_oi_transaction_skews: list[float] = field(default_factory=list)
 
 
 class CurrentOICollector:
@@ -109,8 +118,8 @@ class CurrentOICollector:
         default_cadence_seconds: float = 30.0,
         cycle_timeout_seconds: float | None = None,
         price_max_age_seconds: float = 5.0,
-        max_price_oi_skew_seconds: float = 5.0,
-        max_oi_age_seconds: float = 60.0,
+        max_price_observation_skew_seconds: float = 5.0,
+        transaction_age_warning_seconds: float = 60.0,
         future_oi_tolerance_seconds: float = 5.0,
         clock: Callable[[], datetime] = _utc_now,
         monotonic: Callable[[], float] = time.perf_counter,
@@ -132,10 +141,12 @@ class CurrentOICollector:
             price_max_age_seconds, "price_max_age_seconds"
         )
         self._require_non_negative_finite(
-            max_price_oi_skew_seconds, "max_price_oi_skew_seconds"
+            max_price_observation_skew_seconds,
+            "max_price_observation_skew_seconds",
         )
         self._require_non_negative_finite(
-            max_oi_age_seconds, "max_oi_age_seconds"
+            transaction_age_warning_seconds,
+            "transaction_age_warning_seconds",
         )
         self._require_non_negative_finite(
             future_oi_tolerance_seconds, "future_oi_tolerance_seconds"
@@ -153,8 +164,12 @@ class CurrentOICollector:
             else None
         )
         self.price_max_age_seconds = float(price_max_age_seconds)
-        self.max_price_oi_skew_seconds = float(max_price_oi_skew_seconds)
-        self.max_oi_age_seconds = float(max_oi_age_seconds)
+        self.max_price_observation_skew_seconds = float(
+            max_price_observation_skew_seconds
+        )
+        self.transaction_age_warning_seconds = float(
+            transaction_age_warning_seconds
+        )
         self.future_oi_tolerance_seconds = float(
             future_oi_tolerance_seconds
         )
@@ -403,7 +418,7 @@ class CurrentOICollector:
 
     def _fetch_current_oi(self, symbol: str) -> _FetchedOI:
         reading = self.binance_api.get_current_open_interest(symbol)
-        received_at = _require_utc(self._clock(), "clock")
+        observed_at = _require_utc(self._clock(), "clock")
         if not isinstance(reading, CurrentOpenInterest):
             raise ValueError("current OI client returned an unexpected model")
         if reading.symbol != symbol:
@@ -416,7 +431,7 @@ class CurrentOICollector:
         ):
             raise ValueError("current OI model contains an invalid quantity")
         _require_utc(reading.exchange_time, "OI exchange time")
-        return _FetchedOI(reading, received_at)
+        return _FetchedOI(reading, observed_at)
 
     def _accept_fetched(
         self,
@@ -428,63 +443,67 @@ class CurrentOICollector:
             oi_exchange_time = _require_utc(
                 fetched.reading.exchange_time, "OI exchange time"
             )
-            oi_age = (
-                fetched.received_at_utc - oi_exchange_time
+            transaction_age = (
+                fetched.observed_at_utc - oi_exchange_time
             ).total_seconds()
-            stats.oi_ages.append(oi_age)
-            if oi_age > self.max_oi_age_seconds:
-                stats.stale_oi_rejected += 1
-                stats.failures["stale_oi"] += 1
-                return
-            if oi_age < -self.future_oi_tolerance_seconds:
+            stats.transaction_ages.append(transaction_age)
+            if transaction_age < -self.future_oi_tolerance_seconds:
                 stats.future_oi_rejected += 1
                 stats.failures["future_timestamp"] += 1
                 return
+            if transaction_age > self.transaction_age_warning_seconds:
+                stats.old_transaction_time_count += 1
+
+            previous = self.rolling_store.latest(symbol)
+            if (
+                previous is not None
+                and previous.oi_exchange_time == oi_exchange_time
+            ):
+                stats.transaction_time_unchanged += 1
 
             stored_price = self.price_state.get(symbol)
-            fresh_price = self.price_state.get_fresh(
-                symbol,
-                fetched.received_at_utc,
-                self.price_max_age_seconds,
-            )
-            if fresh_price is not None:
-                price_age = (
-                    fetched.received_at_utc - fresh_price.received_at_utc
-                ).total_seconds()
-                stats.price_ages.append(price_age)
-                price_oi_skew = abs(
-                    (
-                        fresh_price.exchange_time - oi_exchange_time
-                    ).total_seconds()
-                )
-                stats.price_oi_skews.append(price_oi_skew)
-                if price_oi_skew <= self.max_price_oi_skew_seconds:
-                    stats.price_fresh += 1
-                    mark_price = fresh_price.mark_price
-                    price_exchange_time = fresh_price.exchange_time
-                else:
-                    stats.price_stale += 1
-                    mark_price = None
-                    price_exchange_time = None
-            elif stored_price is None:
+            if stored_price is None:
                 stats.price_missing += 1
                 mark_price = None
                 price_exchange_time = None
             else:
-                stats.price_stale += 1
-                stats.price_ages.append(
-                    (
-                        fetched.received_at_utc - stored_price.received_at_utc
+                receipt_age = (
+                    fetched.observed_at_utc - stored_price.received_at_utc
+                ).total_seconds()
+                stats.price_receipt_ages.append(receipt_age)
+                if receipt_age < 0 or receipt_age > self.price_max_age_seconds:
+                    stats.price_receipt_stale += 1
+                    mark_price = None
+                    price_exchange_time = None
+                else:
+                    event_age = (
+                        fetched.observed_at_utc - stored_price.exchange_time
                     ).total_seconds()
-                )
-                mark_price = None
-                price_exchange_time = None
+                    stats.price_event_ages_abs.append(abs(event_age))
+                    stats.price_oi_transaction_skews.append(
+                        abs(
+                            (
+                                stored_price.exchange_time - oi_exchange_time
+                            ).total_seconds()
+                        )
+                    )
+                    if (
+                        abs(event_age)
+                        > self.max_price_observation_skew_seconds
+                    ):
+                        stats.price_alignment_rejected += 1
+                        mark_price = None
+                        price_exchange_time = None
+                    else:
+                        stats.price_fresh += 1
+                        mark_price = stored_price.mark_price
+                        price_exchange_time = stored_price.exchange_time
 
             sample = RollingOISample(
                 symbol=fetched.reading.symbol,
                 oi_quantity=fetched.reading.oi_quantity,
+                observed_at_utc=fetched.observed_at_utc,
                 oi_exchange_time=oi_exchange_time,
-                received_at_utc=fetched.received_at_utc,
                 mark_price=mark_price,
                 price_exchange_time=price_exchange_time,
             )
@@ -567,11 +586,13 @@ class CurrentOICollector:
             oi_requests_attempted=stats.attempted,
             successful_samples=stats.successful_samples,
             failed_symbols=sum(stats.failures.values()),
-            stale_oi_rejected=stats.stale_oi_rejected,
             future_oi_rejected=stats.future_oi_rejected,
+            old_transaction_time_count=stats.old_transaction_time_count,
+            transaction_time_unchanged=stats.transaction_time_unchanged,
             price_fresh=stats.price_fresh,
             price_missing=stats.price_missing,
-            price_stale=stats.price_stale,
+            price_receipt_stale=stats.price_receipt_stale,
+            price_alignment_rejected=stats.price_alignment_rejected,
             samples_inserted=stats.samples_inserted,
             samples_ignored_duplicate_or_out_of_order=stats.samples_ignored,
             timed_out_symbols=stats.timed_out_symbols,
@@ -582,11 +603,24 @@ class CurrentOICollector:
             skip_reason=skip_reason,
             rate_budget_state=budget_state,
             failure_counts=tuple(sorted(stats.failures.items())),
-            oi_age_seconds_min=min(stats.oi_ages, default=None),
-            oi_age_seconds_max=max(stats.oi_ages, default=None),
-            price_age_seconds_max=max(stats.price_ages, default=None),
-            price_oi_skew_seconds_abs_max=max(
-                stats.price_oi_skews, default=None
+            transaction_age_min_s=min(stats.transaction_ages, default=None),
+            transaction_age_median_s=(
+                statistics.median(stats.transaction_ages)
+                if stats.transaction_ages
+                else None
+            ),
+            transaction_age_p95_s=self._percentile_nearest_rank(
+                stats.transaction_ages, 0.95
+            ),
+            transaction_age_max_s=max(stats.transaction_ages, default=None),
+            price_receipt_age_max_s=max(
+                stats.price_receipt_ages, default=None
+            ),
+            price_event_age_abs_max_s=max(
+                stats.price_event_ages_abs, default=None
+            ),
+            price_oi_transaction_skew_abs_max_s=max(
+                stats.price_oi_transaction_skews, default=None
             ),
         )
 
@@ -611,12 +645,15 @@ class CurrentOICollector:
         self._log_summary(result)
         return result
 
-    @staticmethod
-    def _log_summary(result: CurrentOICycleResult) -> None:
+    def _log_summary(self, result: CurrentOICycleResult) -> None:
         logger.info(
             "OI_COLLECTOR_SUMMARY start=%s end=%s elapsed_s=%.3f symbols=%d "
-            "attempted=%d success=%d failures=%d stale=%d future=%d "
-            "price_fresh=%d price_stale=%d price_missing=%d inserted=%d "
+            "attempted=%d success=%d failures=%d future=%d "
+            "old_transaction_time_count=%d transaction_time_unchanged=%d "
+            "transaction_age_min_s=%s transaction_age_median_s=%s "
+            "transaction_age_p95_s=%s transaction_age_max_s=%s "
+            "price_fresh=%d price_missing=%d price_receipt_stale=%d "
+            "price_alignment_rejected=%d inserted=%d "
             "ignored=%d timed_out=%d budget=%s skipped=%s reason=%s",
             result.cycle_started_at_utc.isoformat(),
             result.cycle_finished_at_utc.isoformat(),
@@ -625,11 +662,17 @@ class CurrentOICollector:
             result.oi_requests_attempted,
             result.successful_samples,
             result.failed_symbols,
-            result.stale_oi_rejected,
             result.future_oi_rejected,
+            result.old_transaction_time_count,
+            result.transaction_time_unchanged,
+            self._format_optional(result.transaction_age_min_s),
+            self._format_optional(result.transaction_age_median_s),
+            self._format_optional(result.transaction_age_p95_s),
+            self._format_optional(result.transaction_age_max_s),
             result.price_fresh,
-            result.price_stale,
             result.price_missing,
+            result.price_receipt_stale,
+            result.price_alignment_rejected,
             result.samples_inserted,
             result.samples_ignored_duplicate_or_out_of_order,
             result.timed_out_symbols,
@@ -637,6 +680,20 @@ class CurrentOICollector:
             result.cycle_skipped,
             result.skip_reason,
         )
+
+    @staticmethod
+    def _percentile_nearest_rank(
+        values: list[float], percentile: float
+    ) -> float | None:
+        if not values:
+            return None
+        ordered = sorted(values)
+        rank = max(1, math.ceil(percentile * len(ordered)))
+        return ordered[rank - 1]
+
+    @staticmethod
+    def _format_optional(value: float | None) -> str:
+        return "NA" if value is None else f"{value:.3f}"
 
     @staticmethod
     def _require_positive_finite(value: float, field_name: str) -> None:
