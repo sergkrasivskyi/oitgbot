@@ -7,6 +7,7 @@ from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import patch
 
 from oitgbot.app import build_shadow_runtime
+from oitgbot.clients.telegram_sender import TelegramSender
 from oitgbot.config import Settings
 from oitgbot.models import (
     BinanceRateLimit,
@@ -140,6 +141,8 @@ class ShadowConfigTests(TestCase):
         self.assertEqual(5, value.rolling_oi_price_max_age_seconds)
         self.assertEqual(60, value.rolling_oi_observation_max_age_seconds)
         self.assertEqual(60, value.rolling_oi_transaction_age_warning_seconds)
+        self.assertEqual(5, value.rolling_oi_5m_trigger_pct)
+        self.assertEqual(3, value.rolling_oi_5m_rearm_pct)
 
     def test_invalid_enabled_shadow_config_fails_clearly(self) -> None:
         value = Settings(
@@ -150,6 +153,18 @@ class ShadowConfigTests(TestCase):
         )
 
         with self.assertRaisesRegex(RuntimeError, "RETENTION_MINUTES"):
+            value.validate()
+
+    def test_invalid_signal_hysteresis_fails_clearly(self) -> None:
+        value = Settings(
+            bot_token="x",
+            all_channel_id="a",
+            prop_channel_id="p",
+            rolling_oi_5m_trigger_pct=5,
+            rolling_oi_5m_rearm_pct=5,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "REARM_PCT"):
             value.validate()
 
     def test_disabled_shadow_does_not_construct_runtime(self) -> None:
@@ -446,9 +461,47 @@ class ShadowRuntimeEvaluationTests(TestCase):
     def test_shadow_runtime_has_no_telegram_dependency_or_send_path(self) -> None:
         runtime = self.make_runtime()
         self.add_history(runtime, lambda minute: 100 + minute)
-        fake_telegram = SimpleNamespace(calls=0)
 
-        runtime.evaluate_and_log(cycle_result())
+        with patch.object(TelegramSender, "send_if_not_empty") as send:
+            runtime.evaluate_and_log(cycle_result())
 
         self.assertNotIn("telegram", vars(runtime))
-        self.assertEqual(0, fake_telegram.calls)
+        send.assert_not_called()
+
+    def test_signal_transitions_are_counted_without_persistent_duplicates(self) -> None:
+        runtime = self.make_runtime()
+        for symbol, latest_quantity in (
+            ("POSUSDT", 105.0),
+            ("NEGUSDT", 95.0),
+            ("PERSISTUSDT", 106.0),
+        ):
+            runtime.rolling_store.add(
+                RollingOISample(
+                    symbol,
+                    100.0,
+                    NOW - timedelta(minutes=5),
+                    NOW - timedelta(minutes=5),
+                )
+            )
+            runtime.rolling_store.add(
+                RollingOISample(symbol, latest_quantity, NOW, NOW)
+            )
+
+        persistent = runtime.calculator.calculate_5m(
+            runtime.rolling_store, "PERSISTUSDT"
+        )
+        runtime.signal_state_machine.evaluate(persistent)
+
+        with self.assertLogs("oi_publisher", level="INFO") as captured:
+            evaluation = runtime.evaluate_and_log(cycle_result(requested=3, successful=3))
+
+        self.assertEqual(1, evaluation.new_positive_triggers)
+        self.assertEqual(1, evaluation.new_negative_triggers)
+        self.assertEqual(0, evaluation.rearmed_positive)
+        self.assertEqual(0, evaluation.rearmed_negative)
+        self.assertEqual(2, evaluation.active_positive_states)
+        self.assertEqual(1, evaluation.active_negative_states)
+        output = "\n".join(captured.output)
+        self.assertEqual(2, output.count("ROLLING_SIGNAL_SHADOW event=TRIGGER"))
+        self.assertIn("new_positive_triggers=1", output)
+        self.assertIn("new_negative_triggers=1", output)

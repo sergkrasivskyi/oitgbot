@@ -39,6 +39,8 @@ def build_shadow_runtime(
             settings.rolling_oi_transaction_age_warning_seconds
         ),
         observation_5m_pct=settings.rolling_oi_5m_observation_pct,
+        signal_5m_trigger_pct=settings.rolling_oi_5m_trigger_pct,
+        signal_5m_rearm_pct=settings.rolling_oi_5m_rearm_pct,
         observation_20m_pct=settings.rolling_oi_20m_observation_pct,
         observation_60m_pct=settings.rolling_oi_60m_observation_pct,
         observation_120m_pct=settings.rolling_oi_120m_observation_pct,

@@ -89,6 +89,8 @@ ROLLING_OI_PRICE_MAX_AGE_SECONDS=5
 ROLLING_OI_OBSERVATION_MAX_AGE_SECONDS=60
 ROLLING_OI_TRANSACTION_AGE_WARNING_SECONDS=60
 ROLLING_OI_5M_OBSERVATION_PCT=2
+ROLLING_OI_5M_TRIGGER_PCT=5
+ROLLING_OI_5M_REARM_PCT=3
 ROLLING_OI_20M_OBSERVATION_PCT=1
 ROLLING_OI_60M_OBSERVATION_PCT=3
 ROLLING_OI_120M_OBSERVATION_PCT=4
@@ -99,6 +101,12 @@ observation clock. The former `ROLLING_OI_MAX_OI_AGE_SECONDS` name is accepted
 as a compatibility fallback but no longer rejects present OI because Binance's
 transaction timestamp is old. `ROLLING_OI_TRANSACTION_AGE_WARNING_SECONDS`
 controls diagnostics only.
+
+The rolling 5m signal state machine uses quantity OI only. It triggers at
+`ROLLING_OI_5M_TRIGGER_PCT`, re-arms at
+`ROLLING_OI_5M_REARM_PCT`, and remains shadow-only: it logs transitions but
+does not send Telegram messages. Its per-symbol state is in memory and starts
+clean after an application restart.
 
 ### Пояснення ключових параметрів
 

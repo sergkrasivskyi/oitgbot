@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 
@@ -78,6 +79,12 @@ class Settings:
     rolling_oi_5m_observation_pct: float = field(
         default_factory=lambda: _get_float("ROLLING_OI_5M_OBSERVATION_PCT", "2")
     )
+    rolling_oi_5m_trigger_pct: float = field(
+        default_factory=lambda: _get_float("ROLLING_OI_5M_TRIGGER_PCT", "5")
+    )
+    rolling_oi_5m_rearm_pct: float = field(
+        default_factory=lambda: _get_float("ROLLING_OI_5M_REARM_PCT", "3")
+    )
     rolling_oi_20m_observation_pct: float = field(
         default_factory=lambda: _get_float("ROLLING_OI_20M_OBSERVATION_PCT", "1")
     )
@@ -119,6 +126,26 @@ class Settings:
             if self.rolling_oi_transaction_age_warning_seconds <= 0:
                 invalid.append(
                     "ROLLING_OI_TRANSACTION_AGE_WARNING_SECONDS must be > 0"
+                )
+            if (
+                not math.isfinite(self.rolling_oi_5m_trigger_pct)
+                or self.rolling_oi_5m_trigger_pct <= 0
+            ):
+                invalid.append("ROLLING_OI_5M_TRIGGER_PCT must be finite and > 0")
+            if (
+                not math.isfinite(self.rolling_oi_5m_rearm_pct)
+                or self.rolling_oi_5m_rearm_pct < 0
+            ):
+                invalid.append("ROLLING_OI_5M_REARM_PCT must be finite and >= 0")
+            if (
+                math.isfinite(self.rolling_oi_5m_trigger_pct)
+                and math.isfinite(self.rolling_oi_5m_rearm_pct)
+                and self.rolling_oi_5m_rearm_pct
+                >= self.rolling_oi_5m_trigger_pct
+            ):
+                invalid.append(
+                    "ROLLING_OI_5M_REARM_PCT must be less than "
+                    "ROLLING_OI_5M_TRIGGER_PCT"
                 )
             if invalid:
                 raise RuntimeError("Invalid rolling OI shadow config: " + "; ".join(invalid))

@@ -479,9 +479,11 @@ Expected normal availability at 30-second cadence is shortly after 5, 20, 60, an
 
 Durable store persistence may be evaluated after Phase 1. It requires versioned schema, atomic writes, corruption handling, expiry, and exchange-time validation. It is not justified before the in-memory design is proven.
 
-## Alert state machine
+## Rolling 5m signal state machine
 
-State is maintained per symbol and direction:
+Task 13 adds a shadow-only, in-memory state machine for the 5m rolling quantity
+impulse. It is a separate service from the calculator and store, and state is
+maintained independently per symbol:
 
 ```text
 NORMAL
@@ -489,7 +491,12 @@ POSITIVE_TRIGGERED
 NEGATIVE_TRIGGERED
 ```
 
-The production threshold `T` comes from the existing impulse threshold (currently 5%). The re-arm level is `R = 0.60 * T`, currently 3%. The ratio is configurable with validation `0 <= R < T`.
+The signal threshold `T` defaults to 5% through
+`ROLLING_OI_5M_TRIGGER_PCT`. The re-arm level `R` defaults to 3% through
+`ROLLING_OI_5M_REARM_PCT`, approximately 60% of the trigger. Configuration is
+rejected unless `T > 0`, `R >= 0`, and `R < T`. These settings are intentionally
+separate from `ROLLING_OI_5M_OBSERVATION_PCT`, which controls candidate
+diagnostics only.
 
 Transitions:
 
@@ -497,7 +504,7 @@ Transitions:
 NORMAL + change >= +T
   -> emit one positive signal -> POSITIVE_TRIGGERED
 
-NORMAL + change <= -T (only if negative alerts are enabled)
+NORMAL + change <= -T
   -> emit one negative signal -> NEGATIVE_TRIGGERED
 
 POSITIVE_TRIGGERED + change remains > +R
@@ -515,11 +522,18 @@ NEGATIVE_TRIGGERED is symmetric:
   direct reversal at change >= +T.
 ```
 
-Phase 1 preserves existing positive-alert behavior; negative detection/state is implemented and tested but Telegram delivery remains configuration-gated until product behavior is approved.
+Only `oi_quantity_change_pct` drives these transitions. Price change and derived
+USD OI change are optional event context and cannot create or suppress a signal.
+An unavailable 5m result does not trigger, re-arm, reset state, or substitute a
+zero: missing data is not normalization.
 
 No fixed time cooldown is used initially because hysteresis reflects the metric returning toward neutral. A second legitimate impulse requires re-arm or a direct reversal. The 60% choice balances chatter and sensitivity: a very high re-arm value chatters around 5%, while a very low value can suppress a distinct later move. Shadow data must validate this ratio before cutover.
 
-State changes when a signal event is accepted into the publisher/outbox path, not when Telegram confirms delivery. A failed send therefore does not generate a new event every collector cycle. Delivery retry must use an event ID and bounded retry policy.
+Task 13 emits `ROLLING_SIGNAL_SHADOW` transition diagnostics and summary counts
+only. It has no Telegram sender, publisher, or outbox path; legacy Telegram
+behavior remains unchanged. State is not persisted in Phase 1 and therefore
+starts clean on application restart. State for symbols removed from the current
+eligible universe is pruned.
 
 ## 20-minute TOP behavior
 
@@ -574,9 +588,14 @@ Old transaction time is summarized rather than emitted once per symbol.
 
 For threshold candidates, shadow-selected symbols, and large divergence cases: symbol, window, latest OI time, target, baseline, baseline offset, actual duration, quantity/USD/price changes, and price/OI skews.
 
-### `ROLLING_OI_SIGNAL`
+### `ROLLING_SIGNAL_SHADOW`
 
-Symbol, previous/new state, threshold, re-arm, metric value, event ID, and reason.
+One INFO record per 5m trigger or re-arm transition: symbol, direction,
+previous/new state, trigger/re-arm thresholds, quantity change, optional
+price/USD context, and observation/baseline timestamps. Persistent triggered
+values do not produce repeated transition records. `ROLLING_SHADOW_SUMMARY`
+also reports new positive/negative triggers, positive/negative re-arms, and
+active positive/negative state counts.
 
 ### `ROLLING_OI_WARMUP`
 
@@ -631,7 +650,7 @@ Cutover to rolling-driven impulse Telegram requires all of the following, measur
 8. restart, warm-up, WebSocket reconnect, partial failure, and Telegram retry drills pass;
 9. threshold/re-arm behavior produces no repeated-alert spam in shadow replay.
 
-This is **VALIDATION REQUIRED** in Task 13. Failing any criterion keeps Telegram on legacy logic. Cutover is configuration-gated and independently reversible for 5m and 20m.
+This remains **VALIDATION REQUIRED** after Task 13. Failing any criterion keeps Telegram on legacy logic. Cutover is configuration-gated and independently reversible for 5m and 20m.
 
 ## Historical endpoint after migration
 
@@ -689,13 +708,19 @@ colliding legacy jobs; the scanner's existing ten-worker pool is unchanged, so
 this does not create another per-symbol executor or alter legacy
 formulas, schedules, formatting, routing, or Telegram ownership.
 
-### Follow-up — Rolling impulse state machine
+### Task 13 — Rolling 5m impulse state machine
 
-Implement crossing, hysteresis re-arm, reversal, event IDs, send-independent state, configuration gating, and replay tests. Still shadow-only.
+Implement per-symbol positive/negative trigger states, 5%/3% hysteresis,
+direct reversal, missing-window preservation, eligible-symbol pruning, bounded
+transition diagnostics, and cycle summary counts. The service consumes only 5m
+calculator results and remains in-memory and shadow-only with no Telegram path.
 
-### Task 13 — Live shadow validation
+### Follow-up — Live shadow validation
 
-Run sustained comparisons, collect budget/coverage/freshness/reconnect evidence, replay candidate signals, validate the 30s default versus conditional 20s cadence, and produce a cutover report against every criterion.
+Run sustained comparisons, collect budget/coverage/freshness/reconnect evidence,
+replay candidate signals, validate state-machine behavior and the 30s default
+versus conditional 20s cadence, and produce a cutover report against every
+criterion.
 
 ### Task 14 — Switch 5m impulse to rolling quantity
 

@@ -22,6 +22,12 @@ from oitgbot.services.rolling_oi_calculator import (
     RollingOICalculator,
 )
 from oitgbot.services.rolling_oi_store import RollingOIStore
+from oitgbot.services.rolling_oi_signal_state import (
+    RollingOISignalDirection,
+    RollingOISignalEvent,
+    RollingOISignalEventType,
+    RollingOISignalStateMachine,
+)
 
 logger = logging.getLogger("oi_publisher")
 
@@ -52,6 +58,12 @@ class RollingShadowEvaluation:
     candidates_120m: int
     price_coverage: float
     quantity_sample_coverage: float
+    new_positive_triggers: int
+    new_negative_triggers: int
+    rearmed_positive: int
+    rearmed_negative: int
+    active_positive_states: int
+    active_negative_states: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +96,8 @@ class RollingOIShadowRuntime:
         observation_max_age_seconds: float = 60.0,
         transaction_age_warning_seconds: float = 60.0,
         observation_5m_pct: float = 2.0,
+        signal_5m_trigger_pct: float = 5.0,
+        signal_5m_rearm_pct: float = 3.0,
         observation_20m_pct: float = 1.0,
         observation_60m_pct: float = 3.0,
         observation_120m_pct: float = 4.0,
@@ -143,6 +157,10 @@ class RollingOIShadowRuntime:
         )
         self.calculator = RollingOICalculator(cadence_seconds=cadence_seconds)
         self.analyzer = AccumulationAnalyzer(self.calculator)
+        self.signal_state_machine = RollingOISignalStateMachine(
+            trigger_threshold_pct=signal_5m_trigger_pct,
+            rearm_threshold_pct=signal_5m_rearm_pct,
+        )
         self.price_stream = stream_factory(self.price_state)
         self.rate_budget: Any | None = None
         self.collector: Any | None = None
@@ -296,7 +314,9 @@ class RollingOIShadowRuntime:
                     max(60.0, 2 * self.cadence_seconds),
                 )
             self.evaluate_and_log(
-                result, log_candidates=result.samples_inserted > 0
+                result,
+                log_candidates=result.samples_inserted > 0,
+                eligible_symbols=symbols,
             )
             return result
         except asyncio.CancelledError:
@@ -321,8 +341,14 @@ class RollingOIShadowRuntime:
         cycle: CurrentOICycleResult,
         *,
         log_candidates: bool = True,
+        eligible_symbols: Iterable[str] | None = None,
     ) -> RollingShadowEvaluation:
-        symbols = self.rolling_store.symbols()
+        symbols = (
+            tuple(dict.fromkeys(eligible_symbols))
+            if eligible_symbols is not None
+            else self.rolling_store.symbols()
+        )
+        self.signal_state_machine.prune(symbols)
         windows: dict[int, list[RollingOIWindowResult]] = {
             seconds: [] for seconds in self.observation_thresholds
         }
@@ -386,12 +412,37 @@ class RollingOIShadowRuntime:
             ]
             for seconds, pairs in long_metrics.items()
         }
+        signal_events = self.signal_state_machine.evaluate_batch(windows[300])
+        new_positive_triggers = sum(
+            event.event_type is RollingOISignalEventType.TRIGGER
+            and event.direction is RollingOISignalDirection.POSITIVE
+            for event in signal_events
+        )
+        new_negative_triggers = sum(
+            event.event_type is RollingOISignalEventType.TRIGGER
+            and event.direction is RollingOISignalDirection.NEGATIVE
+            for event in signal_events
+        )
+        rearmed_positive = sum(
+            event.event_type is RollingOISignalEventType.REARM
+            and event.direction is RollingOISignalDirection.POSITIVE
+            for event in signal_events
+        )
+        rearmed_negative = sum(
+            event.event_type is RollingOISignalEventType.REARM
+            and event.direction is RollingOISignalDirection.NEGATIVE
+            for event in signal_events
+        )
+        active_positive_states, active_negative_states = (
+            self.signal_state_machine.active_counts()
+        )
 
         if log_candidates:
             self._log_short_candidates(300, short_candidates[300])
             self._log_short_candidates(1200, short_candidates[1200])
             self._log_accumulation_candidates(3600, accumulation_candidates[3600])
             self._log_accumulation_candidates(7200, accumulation_candidates[7200])
+        self._log_signal_events(signal_events)
 
         quantity_coverage = (
             cycle.successful_samples / cycle.symbols_requested
@@ -416,12 +467,20 @@ class RollingOIShadowRuntime:
             candidates_120m=len(accumulation_candidates[7200]),
             price_coverage=price_coverage,
             quantity_sample_coverage=quantity_coverage,
+            new_positive_triggers=new_positive_triggers,
+            new_negative_triggers=new_negative_triggers,
+            rearmed_positive=rearmed_positive,
+            rearmed_negative=rearmed_negative,
+            active_positive_states=active_positive_states,
+            active_negative_states=active_negative_states,
         )
         self._last_evaluation = evaluation
         logger.info(
             "ROLLING_SHADOW_SUMMARY cycle_utc=%s symbols=%d ready_5m=%d ready_20m=%d "
             "ready_60m=%d ready_120m=%d candidates_5m=%d candidates_20m=%d "
-            "candidates_60m=%d candidates_120m=%d price_coverage=%.3f quantity_coverage=%.3f",
+            "candidates_60m=%d candidates_120m=%d price_coverage=%.3f quantity_coverage=%.3f "
+            "new_positive_triggers=%d new_negative_triggers=%d rearmed_positive=%d "
+            "rearmed_negative=%d active_positive_states=%d active_negative_states=%d",
             evaluation.cycle_utc.isoformat(),
             evaluation.symbol_count,
             evaluation.ready_5m,
@@ -434,6 +493,12 @@ class RollingOIShadowRuntime:
             evaluation.candidates_120m,
             evaluation.price_coverage,
             evaluation.quantity_sample_coverage,
+            evaluation.new_positive_triggers,
+            evaluation.new_negative_triggers,
+            evaluation.rearmed_positive,
+            evaluation.rearmed_negative,
+            evaluation.active_positive_states,
+            evaluation.active_negative_states,
         )
         if evaluation.ready_120m < evaluation.symbol_count:
             logger.info(
@@ -445,6 +510,36 @@ class RollingOIShadowRuntime:
                 evaluation.ready_120m,
             )
         return evaluation
+
+    @staticmethod
+    def _log_signal_events(events: Sequence[RollingOISignalEvent]) -> None:
+        for event in events:
+            logger.info(
+                "ROLLING_SIGNAL_SHADOW event=%s direction=%s symbol=%s oi_5m=%s "
+                "threshold=%.2f rearm=%.2f previous=%s new=%s price_5m=%s "
+                "oi_usd_5m=%s latest_utc=%s baseline_utc=%s actual_window_s=%s",
+                event.event_type.value,
+                event.direction.value,
+                event.symbol,
+                _pct(event.oi_quantity_change_pct),
+                event.trigger_threshold_pct,
+                event.rearm_threshold_pct,
+                event.previous_state.value,
+                event.new_state.value,
+                _pct(event.price_change_pct),
+                _pct(event.oi_value_change_pct),
+                (
+                    event.latest_observed_at_utc.isoformat()
+                    if event.latest_observed_at_utc
+                    else "NA"
+                ),
+                (
+                    event.baseline_observed_at_utc.isoformat()
+                    if event.baseline_observed_at_utc
+                    else "NA"
+                ),
+                _metric(event.actual_window_seconds),
+            )
 
     def _log_short_candidates(
         self, seconds: int, candidates: Sequence[RollingOIWindowResult]
