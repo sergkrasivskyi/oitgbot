@@ -10,6 +10,7 @@ from requests.adapters import HTTPAdapter
 from requests.exceptions import RequestException
 
 from oitgbot.config import settings
+from oitgbot.models import BinanceRateLimit, CurrentOpenInterest
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,36 @@ class BinanceAPI:
             out.append(symbol)
 
         return out
+
+    def get_current_open_interest(self, symbol: str) -> CurrentOpenInterest:
+        requested_symbol = symbol.upper()
+        data = self._request(
+            "/fapi/v1/openInterest", {"symbol": requested_symbol}
+        )
+        return CurrentOpenInterest.from_binance_payload(data, requested_symbol)
+
+    def get_rate_limits(self) -> list[BinanceRateLimit]:
+        data = self._request("/fapi/v1/exchangeInfo")
+        if not isinstance(data, dict):
+            raise ValueError("exchangeInfo response must be an object")
+
+        raw_rate_limits = data.get("rateLimits")
+        if raw_rate_limits is None:
+            return []
+        if not isinstance(raw_rate_limits, list):
+            raise ValueError("exchangeInfo rateLimits must be a list")
+
+        return [
+            BinanceRateLimit.from_binance_payload(rate_limit)
+            for rate_limit in raw_rate_limits
+        ]
+
+    def get_request_weight_limits(self) -> list[BinanceRateLimit]:
+        return [
+            rate_limit
+            for rate_limit in self.get_rate_limits()
+            if rate_limit.rate_limit_type == "REQUEST_WEIGHT"
+        ]
 
     def get_open_interest_history(
         self,
