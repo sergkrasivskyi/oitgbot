@@ -219,9 +219,13 @@ Collector defaults:
 | Concurrency | 20 workers, configurable downward by protection state |
 | Connect timeout | 3.5 seconds |
 | Read timeout | 5 seconds |
-| Transient retries | At most 1, only when budget permits |
+| HTTP retry behavior | Existing `BinanceAPI` retry behavior remains unchanged in Task 10 |
 | Cycle timeout | `min(20 seconds, 0.8 * cadence)` |
 | Overlap | Forbidden; skip the next tick rather than queue another cycle |
+| Maximum accepted current-OI age | 60 seconds, configurable |
+| Future OI clock tolerance | 5 seconds, configurable |
+| Price receipt age and OI/price exchange-time skew | At most 5 seconds each, configurable |
+| Projected retry reserve | 5% of symbol requests per cycle by default, configurable; this budgets existing client retries but does not change their behavior |
 
 Cycle flow:
 
@@ -291,15 +295,14 @@ This is **VALIDATION REQUIRED**. The architecture remains cadence-configurable.
 
 ## Dynamic request-budget protection
 
-`RateLimitBudget` reads relevant rate-limit definitions from `exchangeInfo` and, where available, reconciles them with Binance used-weight response headers. It keeps time-window counters per relevant limit instead of relying on one permanently hard-coded requests-per-minute value.
+`RateLimitBudget` reads every relevant rate-limit definition from `exchangeInfo` instead of relying on one permanently hard-coded requests-per-minute value. Task 10 implements conservative projection against every runtime window. Reconciliation with Binance used-weight response headers remains a later runtime-integration enhancement because the current client does not expose those headers.
 
 Policy:
 
 ```text
-0–60% projected limit     normal; collector and budgeted shadow work allowed
-60–70%                    pressure; disable optional diagnostics/retries first
-70–80%                    constrained; postpone optional work and extend next cadence
->80% projected            unsafe; do not start a cycle that cannot fit safely
+0–~60% projected limit    SAFE; collector and budgeted optional work fit comfortably
+~60–70%                   PRESSURE; collector may run, but optional work/retries reduce first
+>70% projected            UNSAFE; do not start a cycle under the normal 30% reserve policy
 HTTP 429                  honor Retry-After, stop retries, exponential backoff with jitter
 HTTP 418                  enter protection state, stop polling, honor ban/retry time,
                           require successful low-rate health recovery before resuming
