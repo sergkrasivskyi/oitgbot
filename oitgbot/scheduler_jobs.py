@@ -21,11 +21,13 @@ class SchedulerJobs:
         telegram_sender: TelegramSender,
         oi_scanner: OIScanner,
         report_formatter: ReportFormatter,
+        shadow_runtime: object | None = None,
     ) -> None:
         self.binance_api = binance_api
         self.telegram_sender = telegram_sender
         self.oi_scanner = oi_scanner
         self.report_formatter = report_formatter
+        self.shadow_runtime = shadow_runtime
 
         self._symbols_cache: list[str] = []
         self._symbols_cache_ts = 0.0
@@ -54,6 +56,21 @@ class SchedulerJobs:
 
             log.error("Failed to load symbols and cache is empty: %s", exc)
             return []
+
+    def get_symbols_cached(self) -> list[str]:
+        """Return the legacy bot's cached eligible perpetual universe."""
+        return self._get_symbols_cached()
+
+    def _compare_shadow(self, window_seconds: int, rows: list[OIRow]) -> None:
+        if self.shadow_runtime is None:
+            return
+        compare = getattr(self.shadow_runtime, "compare_legacy", None)
+        if compare is None:
+            return
+        try:
+            compare(window_seconds, rows)
+        except Exception:
+            log.exception("Shadow comparison failed window_s=%d", window_seconds)
 
     def _fill_price_5m(self, rows: list[OIRow]) -> int:
         errors = 0
@@ -107,6 +124,7 @@ class SchedulerJobs:
             log.info("OI_5m computed: rows=%d, errors=%d", len(all_rows), errors)
             self.oi_scanner.log_scan_diagnostics(scan_result)
             self.oi_scanner.log_top(all_rows, "OI_5m ALL (sorted)", n=10)
+            self._compare_shadow(300, all_rows)
 
             impulses = [row for row in all_rows if row.oi_pct >= settings.impulse_threshold]
             self.oi_scanner.log_qualifying_diagnostics(impulses, scan_result)
@@ -222,6 +240,7 @@ class SchedulerJobs:
             log.info("OI_20m computed: rows=%d, errors=%d", len(all_rows), errors)
             self.oi_scanner.log_scan_diagnostics(scan_result)
             self.oi_scanner.log_top(all_rows, "OI_20m ALL (sorted)", n=10)
+            self._compare_shadow(1200, all_rows)
 
             rows_all = [row for row in all_rows if row.oi_pct >= settings.top_threshold]
             self.oi_scanner.log_qualifying_diagnostics(rows_all, scan_result)

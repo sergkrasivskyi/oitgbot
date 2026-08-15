@@ -73,3 +73,14 @@ class PriceStateStore:
     def snapshot(self) -> dict[str, MarkPriceUpdate]:
         with self._lock:
             return dict(self._prices)
+
+    def set_eligible_symbols(self, symbols: Iterable[str]) -> None:
+        """Atomically align the accepted stream universe and discard outsiders."""
+        eligible = {symbol.upper() for symbol in symbols}
+        with self._lock:
+            self._eligible_symbols = eligible
+            self._prices = {
+                symbol: update
+                for symbol, update in self._prices.items()
+                if symbol in eligible
+            }

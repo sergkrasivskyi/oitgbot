@@ -212,6 +212,18 @@ class PriceStateStoreTests(TestCase):
 
         self.assertIs(update, store.get("BTCUSDT"))
 
+    def test_eligible_universe_can_be_refreshed_atomically(self) -> None:
+        store = PriceStateStore({"BTCUSDT", "ETHUSDT"})
+        store.update(price_update("BTCUSDT"))
+        store.update(price_update("ETHUSDT"))
+
+        store.set_eligible_symbols(["ethusdt", "SOLUSDT"])
+
+        self.assertIsNone(store.get("BTCUSDT"))
+        self.assertIsNotNone(store.get("ETHUSDT"))
+        self.assertFalse(store.update(price_update("BTCUSDT")))
+        self.assertTrue(store.update(price_update("SOLUSDT")))
+
 
 class FakeWebSocket:
     def __init__(self, *messages: str | Exception) -> None:

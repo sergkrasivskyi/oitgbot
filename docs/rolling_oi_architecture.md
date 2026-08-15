@@ -647,6 +647,16 @@ Implement `RateLimitBudget`, dedicated bounded executor, non-overlapping cycle o
 
 Start/stop WebSocket, collector, store, and comparison service safely alongside legacy jobs. Telegram remains legacy-driven. Add graceful-shutdown and service-failure integration tests.
 
+Implemented as one application-owned `RollingOIShadowRuntime`. When enabled,
+it starts one mark-price stream, obtains runtime `REQUEST_WEIGHT` limits, reuses
+the legacy scheduler's cached eligible symbol universe, and begins natural-startup
+30-second collection without five-minute boundary alignment. It evaluates
+5m/20m/60m/120m windows after successful insertions and emits bounded shadow
+candidates plus one cycle summary. Legacy 5m and 20m jobs retain all Telegram
+ownership and provide only a bounded comparison hook. HTTP 429 enters a minimum
+60-second polling backoff; HTTP 418 stops shadow polling. Shutdown stops the
+periodic task, drains/closes the collector executor, then stops the WebSocket.
+
 ### Task 12 — Rolling impulse state machine
 
 Implement crossing, hysteresis re-arm, reversal, event IDs, send-independent state, configuration gating, and replay tests. Still shadow-only.

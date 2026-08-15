@@ -16,6 +16,28 @@ from .logger_setup import setup_logging
 from .scheduler_jobs import SchedulerJobs
 from .services.oi_scanner import OIScanner
 from .services.report_formatter import ReportFormatter
+from .services.rolling_oi_shadow_runtime import RollingOIShadowRuntime
+
+
+def build_shadow_runtime(
+    binance_api: BinanceAPI,
+    jobs: SchedulerJobs,
+) -> RollingOIShadowRuntime | None:
+    if not settings.rolling_oi_shadow_enabled:
+        return None
+    return RollingOIShadowRuntime(
+        binance_api,
+        jobs.get_symbols_cached,
+        cadence_seconds=settings.rolling_oi_cadence_seconds,
+        workers=settings.rolling_oi_workers,
+        retention_minutes=settings.rolling_oi_retention_minutes,
+        price_max_age_seconds=settings.rolling_oi_price_max_age_seconds,
+        max_oi_age_seconds=settings.rolling_oi_max_oi_age_seconds,
+        observation_5m_pct=settings.rolling_oi_5m_observation_pct,
+        observation_20m_pct=settings.rolling_oi_20m_observation_pct,
+        observation_60m_pct=settings.rolling_oi_60m_observation_pct,
+        observation_120m_pct=settings.rolling_oi_120m_observation_pct,
+    )
 
 
 async def main_async() -> None:
@@ -25,6 +47,7 @@ async def main_async() -> None:
     app: Application | None = None
     scheduler: AsyncIOScheduler | None = None
     binance_api: BinanceAPI | None = None
+    shadow_runtime: RollingOIShadowRuntime | None = None
 
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -66,6 +89,14 @@ async def main_async() -> None:
             oi_scanner=oi_scanner,
             report_formatter=report_formatter,
         )
+
+        if settings.rolling_oi_shadow_enabled:
+            shadow_runtime = build_shadow_runtime(binance_api, jobs)
+            assert shadow_runtime is not None
+            jobs.shadow_runtime = shadow_runtime
+            await shadow_runtime.start()
+        else:
+            log.info("ROLLING_SHADOW_STATUS enabled=false")
 
         scheduler = AsyncIOScheduler(event_loop=loop)
 
@@ -116,6 +147,10 @@ async def main_async() -> None:
         raise
     finally:
         log.info("Shutting down...")
+
+        if shadow_runtime is not None:
+            with contextlib.suppress(Exception):
+                await shadow_runtime.stop()
 
         if scheduler is not None:
             with contextlib.suppress(Exception):
