@@ -9,7 +9,7 @@ This design replaces historical five-minute Open Interest buckets as the primary
 The engine must:
 
 - react faster than the legacy five-minute historical-bucket scanner;
-- define deterministic 5m and 20m windows from exchange timestamps;
+- define deterministic 5m, 20m, 60m, and 120m windows from exchange timestamps;
 - keep request usage within runtime Binance limits with explicit headroom;
 - avoid blocking the asyncio event loop;
 - reuse the existing formatter, Telegram sender, symbol eligibility rules, and configuration where their semantics still fit;
@@ -42,10 +42,10 @@ Historical `openInterestHist` remains diagnostic-only after cutover. It must not
                   +----------------+----------------+
                   |                                 |
                   v                                 v
-       RollingWindowCalculator 5m       RollingWindowCalculator 20m
+     RollingWindowCalculator 5m/20m     AccumulationAnalyzer 60m/120m
                   |                                 |
                   v                                 v
-        ImpulseStateMachine                  Scheduled TOP selector
+        Impulse/TOP consumers              quality diagnostics
                   |                                 |
                   +----------------+----------------+
                                    v
@@ -67,8 +67,9 @@ Historical `openInterestHist` remains diagnostic-only after cutover. It must not
 | `CurrentOIClient` | Call `GET /fapi/v1/openInterest` for one symbol and parse quantity/time | Symbol | `CurrentOIReading` or typed error | Initially synchronous existing-client method invoked through a dedicated bounded executor | One request failure is isolated to one symbol |
 | `RateLimitBudget` | Parse runtime limits, reserve capacity, authorize primary/retry/optional work, and enter protection states | `exchangeInfo`, response headers/statuses, planned request costs | Permit/delay/deny decision plus metrics | Application-owned state, updated every cycle and after responses | Missing budget information chooses conservative cadence and disables optional work |
 | `CurrentOICollector` | Run non-overlapping full-market current-OI cycles with bounded concurrency and combine readings with price state | Eligible symbols, current OI client, price store, budget | `CollectionCycleResult` and valid `RollingOISample` objects | One async service task; blocking HTTP only in dedicated executor | Partial failures stay local; cycle timeout cancels pending work without deleting history |
-| `RollingOIStore` | Store bounded, ordered per-symbol samples and select deterministic baselines | Valid `RollingOISample` | Latest sample, acceptable baseline, coverage snapshot | In-memory application-owned store | Rejects invalid/future/stale samples; old valid history remains intact |
+| `RollingOIStore` | Store bounded, ordered per-symbol samples without performing analytics | Valid `RollingOISample` | Latest sample and immutable history snapshot | In-memory application-owned store | Rejects invalid/out-of-order samples; old valid history remains intact |
 | `RollingWindowCalculator` | Calculate quantity, derived USD, and aligned price changes | Latest sample, selected baseline, window definition | `RollingWindowResult` or explicit unavailable reason | Pure synchronous calculation, called on the event loop after a cycle | Invalid/zero baselines produce unavailable, never a false zero percent |
+| `AccumulationAnalyzer` | Describe 60m/120m accumulation shape without applying production thresholds | Rolling OI history and exact long-window result | Persistence, efficiency, drawdown, impulse concentration, and coverage | Pure synchronous calculation | Missing anchors reduce reported coverage; they are never treated as negative or zero samples |
 | `ImpulseStateMachine` | Detect threshold crossings and suppress repeats using hysteresis | Valid 5m rolling result per symbol | Durable-in-memory signal event and state transition | Event-loop owned; evaluated after healthy/degraded collection cycles | Signal state advances when an event is accepted, not according to Telegram success |
 | `TopReportService` | Read the rolling store on the existing 20-minute schedule and build TOP rows | Store snapshot and 20m calculations | Existing report-row shape | Short async scheduled job; no Binance collection | Skips report when market coverage is below the report threshold |
 | `ShadowComparisonService` | Compare meaningful legacy and rolling cases without driving Telegram | Legacy diagnostics and rolling results | `OI_SHADOW_COMPARE` logs/metrics | Enabled during migration; optional and budget-subordinate | Legacy failure does not affect the rolling collector |
@@ -324,25 +325,26 @@ Basic structure:
 dict[str, deque[RollingOISample]]
 ```
 
-Retention is 30 minutes based on `oi_exchange_time`. Pruning occurs after each successful insertion and during periodic maintenance.
+Retention is 150 minutes based on `oi_exchange_time`. This covers the 120-minute product window plus tolerance and operational headroom. Pruning occurs after each successful insertion and during explicit maintenance.
 
 Approximate retained counts:
 
-| Cadence | Samples/symbol over 30m (inclusive allowance) | Samples for 550 symbols |
+| Cadence | Samples/symbol over 150m (inclusive allowance) | Samples for 550 symbols |
 |---:|---:|---:|
-| 15 seconds | ~121 | ~66,550 |
-| 20 seconds | ~91 | ~50,050 |
-| 30 seconds | ~61 | ~33,550 |
-| 60 seconds | ~31 | ~17,050 |
+| 15 seconds | ~601 | ~330,550 |
+| 20 seconds | ~451 | ~248,050 |
+| 30 seconds | ~301 | ~165,550 |
+| 60 seconds | ~151 | ~83,050 |
 
-The hard per-symbol cap is `ceil(retention / minimum_configured_cadence) + 2`. Phase 1 minimum cadence is 15 seconds, so the default hard cap is 122. A future 5-second fast-watch mode must explicitly raise/recalculate the cap (about 362) and its memory budget. This prevents unbounded growth even if pruning or clocks misbehave.
+The hard per-symbol cap is `ceil(retention / configured_cadence) + 2`. At the 30-second default this is 302 samples per symbol. Any cadence change must recalculate the cap or supply an explicit bound. This prevents unbounded growth even if pruning or clocks misbehave.
 
 Insertion rules:
 
 - order by `oi_exchange_time`, not local arrival order;
-- same exchange timestamp and identical data: ignore as idempotent duplicate;
-- same exchange timestamp and changed data: replace with the later-received valid sample and emit a conflicting-duplicate warning;
-- out-of-order but still within retention: insert in sorted position and warn; this can repair a missed baseline;
+- same exchange timestamp and identical or less-complete data: ignore as an idempotent duplicate;
+- same exchange timestamp and consistent quantity: replace only when the new sample adds richer price context;
+- same exchange timestamp with conflicting quantity: ignore;
+- older/out-of-order samples: ignore so accepted history never moves backward;
 - older than retention: reject;
 - future beyond 5 seconds or stale beyond the collector freshness limit: reject;
 - failed cycles insert nothing for failed symbols;
@@ -351,7 +353,7 @@ Insertion rules:
 
 ## Exact rolling-window semantics
 
-For window `W` (300 seconds or 1,200 seconds):
+For window `W` (300, 1,200, 3,600, or 7,200 seconds):
 
 1. Select the latest valid, fresh sample for the symbol.
 2. Define `target_time = latest.oi_exchange_time - W`.
@@ -364,7 +366,7 @@ target_time - baseline.oi_exchange_time <= tolerance
 
 5. Otherwise return `window unavailable: no baseline within tolerance`.
 
-The same rule is used for 5m and 20m. No sample after the target is selected, so there is no future-data leakage relative to the target. No interpolation is performed.
+The same rule is used for 5m, 20m, 60m, and 120m. No sample after the target is selected, so there is no future-data leakage relative to the target. No interpolation is performed.
 
 Tolerance is:
 
@@ -381,6 +383,8 @@ At the selected 30-second cadence:
 
 - a 5m window has an actual duration from 300 through 360 seconds;
 - a 20m window has an actual duration from 1,200 through 1,260 seconds.
+- a 60m window has an actual duration from 3,600 through 3,660 seconds;
+- a 120m window has an actual duration from 7,200 through 7,260 seconds.
 
 Example:
 
@@ -418,6 +422,12 @@ Missing, malformed, non-finite, or zero baselines return an explicit unavailable
 
 Price change uses the prices captured on the same latest and baseline OI samples. This aligns price and OI windows as closely as possible without claiming atomic sampling. Residual skew is visible through both samples' `price_exchange_time - oi_exchange_time`; the attached-price rule caps each absolute skew at 5 seconds.
 
+## Slow and long accumulation quality
+
+The 60m Slow Accumulation and 120m Long Accumulation views reuse the exact rolling-window rule and add descriptive shape metrics. Ten-minute anchors calculate positive, negative, and flat directional blocks, persistence, trend efficiency, positive-magnitude peak-to-trough drawdown, and anchor coverage. Five-minute anchors calculate the concentration of positive OI growth in the largest positive block and the maximum calculable 5m percentage change.
+
+Missing anchors reduce coverage and do not count as negative blocks. A flat path has trend efficiency `0.0`; no positive 5m movement makes impulse concentration unavailable. These metrics are diagnostics only. Hard Slow/Long Accumulation thresholds for persistence, efficiency, drawdown, concentration, or coverage are **VALIDATION REQUIRED** and are not production eligibility gates yet.
+
 ## Clock semantics
 
 Four clocks remain distinct:
@@ -441,12 +451,13 @@ Phase 1 uses cold in-memory warm-up.
 
 - A 5m signal is eligible only when the store can select an acceptable 5m baseline using the exact rule above.
 - A 20m TOP row is eligible only when an acceptable 20m baseline exists.
+- A 60m or 120m quality result requires its exact baseline; partial internal anchors remain visible through coverage rather than fabricated data.
 - Eligibility depends on actual samples, not process uptime.
 - Historical `sumOpenInterestValue` is never used to seed current `openInterest` quantity history.
 
-Expected normal availability at 30-second cadence is shortly after 5 minutes for impulses and shortly after 20 minutes for TOP, subject to baseline tolerance and successful cycles. Restarts explicitly log `ROLLING_OI_WARMUP` coverage until each window is available.
+Expected normal availability at 30-second cadence is shortly after 5, 20, 60, and 120 minutes for their respective windows, subject to baseline tolerance and successful cycles. Restarts explicitly log `ROLLING_OI_WARMUP` coverage until each window is available.
 
-Persistence may be evaluated after Phase 1. It requires versioned schema, atomic writes, corruption handling, expiry, and exchange-time validation. It is not justified before the in-memory design is proven.
+Durable store persistence may be evaluated after Phase 1. It requires versioned schema, atomic writes, corruption handling, expiry, and exchange-time validation. It is not justified before the in-memory design is proven.
 
 ## Alert state machine
 
@@ -623,7 +634,7 @@ Implement `MarkPriceStream` and `PriceStateStore`, reconnect/staleness health, p
 
 ### Task 9 — Rolling store and calculator
 
-Implement bounded insertion/pruning/duplicate/out-of-order rules, exact 5m/20m baseline selection, tolerance, quantity/USD/aligned-price calculations, and warm-up coverage tests.
+Implement 150-minute bounded retention, deterministic duplicate/out-of-order rules, generic exact 5m/20m/60m/120m baseline selection, quantity/USD/aligned-price calculations, and descriptive long-accumulation quality metrics. No Slow/Long production thresholds are applied.
 
 ### Task 10 — Rate budget and current OI collector
 
@@ -700,10 +711,10 @@ Required tests:
 4. **OI source:** per-symbol `GET /fapi/v1/openInterest`; historical OI is not a primary signal source.
 5. **Base collector cadence:** configurable, default 30 seconds. A 20-second cadence is **VALIDATION REQUIRED** under the documented budget and cycle-duration gates.
 6. **Adaptive fast polling in initial release:** no; interfaces permit a bounded future watch set.
-7. **Rolling retention:** 30 minutes plus a cadence-derived hard sample cap.
-8. **5m baseline rule:** latest valid sample at or before `latest.oi_exchange_time - 300s`, within tolerance; no interpolation.
-9. **20m baseline rule:** latest valid sample at or before `latest.oi_exchange_time - 1200s`, within tolerance; no interpolation.
-10. **Baseline tolerance:** `max(60 seconds, 2 * configured base cadence)` for both windows.
+7. **Rolling retention:** 150 minutes plus a cadence-derived hard sample cap (302 samples per symbol at the 30-second default).
+8. **Rolling baseline rule:** for 5m/20m/60m/120m, use the latest valid sample at or before `latest.oi_exchange_time - window`, within tolerance; no future-side selection or interpolation.
+9. **Long accumulation quality:** 60m/120m results expose persistence, trend efficiency and direction, positive-magnitude maximum drawdown, 5m impulse concentration, and coverage. Hard quality thresholds are **VALIDATION REQUIRED**.
+10. **Baseline tolerance:** `max(60 seconds, 2 * configured base cadence)` for all supported windows.
 11. **Canonical sample timestamp:** Binance `oi_exchange_time`; receipt/cycle clocks are diagnostic only.
 12. **Warm-up/restart strategy:** cold in-memory warm-up based on actual acceptable baseline availability; no historical/current semantic mixing.
 13. **5m alert re-arm strategy:** hysteresis at `0.60 * threshold` (3% for a 5% threshold), direct reversal supported, no fixed cooldown initially; shadow validation required.

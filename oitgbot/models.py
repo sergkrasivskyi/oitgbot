@@ -203,3 +203,116 @@ class MarkPriceUpdate:
                 received_at_utc, "received_at_utc"
             ),
         )
+
+
+def _require_finite_number(
+    value: object,
+    field_name: str,
+    *,
+    positive: bool = False,
+) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a finite number")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a finite number") from exc
+    if not math.isfinite(parsed) or (positive and parsed <= 0) or parsed < 0:
+        qualifier = "positive" if positive else "non-negative"
+        raise ValueError(f"{field_name} must be a finite {qualifier} number")
+    return parsed
+
+
+@dataclass(frozen=True, slots=True)
+class RollingOISample:
+    """One validated current-OI observation ordered by exchange time."""
+
+    symbol: str
+    oi_quantity: float
+    oi_exchange_time: datetime
+    received_at_utc: datetime
+    mark_price: float | None = None
+    price_exchange_time: datetime | None = None
+    oi_value_usd: float | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.symbol, str) or not self.symbol.strip():
+            raise ValueError("symbol must be a non-empty string")
+
+        quantity = _require_finite_number(self.oi_quantity, "oi_quantity")
+        oi_time = _require_utc_datetime(
+            self.oi_exchange_time, "oi_exchange_time"
+        )
+        received_at = _require_utc_datetime(
+            self.received_at_utc, "received_at_utc"
+        )
+
+        mark_price = self.mark_price
+        if mark_price is not None:
+            mark_price = _require_finite_number(
+                mark_price, "mark_price", positive=True
+            )
+
+        price_time = self.price_exchange_time
+        if price_time is not None:
+            price_time = _require_utc_datetime(
+                price_time, "price_exchange_time"
+            )
+
+        oi_value_usd = self.oi_value_usd
+        if oi_value_usd is None and mark_price is not None:
+            oi_value_usd = quantity * mark_price
+        if oi_value_usd is not None:
+            oi_value_usd = _require_finite_number(
+                oi_value_usd, "oi_value_usd"
+            )
+
+        object.__setattr__(self, "oi_quantity", quantity)
+        object.__setattr__(self, "oi_exchange_time", oi_time)
+        object.__setattr__(self, "received_at_utc", received_at)
+        object.__setattr__(self, "mark_price", mark_price)
+        object.__setattr__(self, "price_exchange_time", price_time)
+        object.__setattr__(self, "oi_value_usd", oi_value_usd)
+
+
+@dataclass(frozen=True, slots=True)
+class RollingOIWindowResult:
+    symbol: str
+    window_seconds: int
+    available: bool
+    unavailable_reason: str | None
+    latest_timestamp: datetime | None
+    baseline_timestamp: datetime | None
+    target_timestamp: datetime | None
+    actual_window_seconds: float | None
+    baseline_offset_seconds: float | None
+    latest_oi_quantity: float | None
+    baseline_oi_quantity: float | None
+    oi_quantity_change_pct: float | None
+    latest_mark_price: float | None
+    baseline_mark_price: float | None
+    price_change_pct: float | None
+    latest_oi_value_usd: float | None
+    baseline_oi_value_usd: float | None
+    oi_value_change_pct: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class LongAccumulationMetrics:
+    symbol: str
+    window_seconds: int
+    available: bool
+    unavailable_reason: str | None
+    net_oi_change_pct: float | None
+    persistence: float | None
+    positive_blocks: int
+    negative_blocks: int
+    flat_blocks: int
+    valid_blocks: int
+    expected_blocks: int
+    trend_efficiency: float | None
+    trend_direction: str | None
+    max_drawdown_pct: float | None
+    impulse_concentration: float | None
+    max_5m_change_pct: float | None
+    coverage_ratio: float
