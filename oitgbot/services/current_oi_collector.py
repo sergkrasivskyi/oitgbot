@@ -22,7 +22,7 @@ from oitgbot.services.rate_limit_budget import (
 )
 from oitgbot.services.rolling_oi_store import RollingOIStore
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("oitgbot.rolling.collector")
 
 
 def _utc_now() -> datetime:

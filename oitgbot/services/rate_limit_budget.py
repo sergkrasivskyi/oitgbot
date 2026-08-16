@@ -8,7 +8,7 @@ from typing import Iterable
 
 from oitgbot.models import BinanceRateLimit
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("oitgbot.rolling.rate_limit")
 
 _INTERVAL_SECONDS = {
     "SECOND": 1,

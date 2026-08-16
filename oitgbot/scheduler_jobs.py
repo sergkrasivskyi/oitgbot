@@ -17,6 +17,7 @@ from .services.oi_diagnostics import utc_iso, utc_now
 from .services.report_formatter import ReportFormatter
 
 log = logging.getLogger("oi_publisher")
+rolling_log = logging.getLogger("oitgbot.rolling.comparison")
 
 
 class SchedulerJobs:
@@ -97,7 +98,7 @@ class SchedulerJobs:
         try:
             compare(window_seconds, rows)
         except Exception:
-            log.exception("Shadow comparison failed window_s=%d", window_seconds)
+            rolling_log.exception("Shadow comparison failed window_s=%d", window_seconds)
 
     def _fill_price_5m(self, rows: list[OIRow]) -> int:
         errors = 0

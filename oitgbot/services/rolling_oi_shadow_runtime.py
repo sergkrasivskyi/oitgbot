@@ -29,7 +29,7 @@ from oitgbot.services.rolling_oi_signal_state import (
     RollingOISignalStateMachine,
 )
 
-logger = logging.getLogger("oi_publisher")
+logger = logging.getLogger("oitgbot.rolling.runtime")
 
 
 def _utc_now() -> datetime:

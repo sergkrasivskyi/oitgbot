@@ -447,7 +447,7 @@ class ShadowRuntimeEvaluationTests(TestCase):
         runtime = self.make_runtime()
         self.add_history(runtime, lambda minute: 100 + minute)
 
-        with self.assertLogs("oi_publisher", level="INFO") as captured:
+        with self.assertLogs("oitgbot.rolling.runtime", level="INFO") as captured:
             runtime.evaluate_and_log(cycle_result())
             runtime.compare_legacy(300, [OIRow("BTCUSDT", 0.0)])
 
@@ -492,7 +492,7 @@ class ShadowRuntimeEvaluationTests(TestCase):
         )
         runtime.signal_state_machine.evaluate(persistent)
 
-        with self.assertLogs("oi_publisher", level="INFO") as captured:
+        with self.assertLogs("oitgbot.rolling.runtime", level="INFO") as captured:
             evaluation = runtime.evaluate_and_log(cycle_result(requested=3, successful=3))
 
         self.assertEqual(1, evaluation.new_positive_triggers)

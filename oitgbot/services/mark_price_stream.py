@@ -16,7 +16,7 @@ from websockets.asyncio.client import connect
 from oitgbot.models import MarkPriceUpdate
 from oitgbot.services.price_state import PriceStateStore
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("oitgbot.rolling.price_stream")
 
 MARK_PRICE_STREAM_URL = (
     "wss://fstream.binance.com/market/ws/!markPrice@arr@1s"

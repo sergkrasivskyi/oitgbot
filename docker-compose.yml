@@ -7,6 +7,7 @@ services:
       - .env
     volumes:
       - ./bot.log:/app/bot.log
+      - ./rolling_oi.log:/app/rolling_oi.log
     command: ["python", "run.py"]
     stop_signal: SIGTERM
     stop_grace_period: 20s

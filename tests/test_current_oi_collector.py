@@ -240,7 +240,7 @@ class CurrentOICollectorTests(IsolatedAsyncioTestCase):
         self.addAsyncCleanup(collector.close)
 
         with self.assertLogs(
-            "oitgbot.services.current_oi_collector", level="INFO"
+            "oitgbot.rolling.collector", level="INFO"
         ) as captured:
             result = await collector.collect_cycle(api.responses)
 

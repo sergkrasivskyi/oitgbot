@@ -104,7 +104,9 @@ async def main_async() -> None:
             jobs.shadow_runtime = shadow_runtime
             await shadow_runtime.start()
         else:
-            log.info("ROLLING_SHADOW_STATUS enabled=false")
+            logging.getLogger("oitgbot.rolling.runtime").info(
+                "ROLLING_SHADOW_STATUS enabled=false"
+            )
 
         scheduler = AsyncIOScheduler(event_loop=loop)
 
@@ -142,6 +144,7 @@ async def main_async() -> None:
         )
         log.info("PROP symbols loaded: %d", len(settings.prop_symbols))
         log.info("Logging to %s", settings.log_file)
+        log.info("Rolling OI logging to %s", settings.rolling_oi_log_file)
         log.info("HTTP config: timeout=%s, retries=%s", settings.http_timeout, settings.http_retries)
         log.info("Telegram timeouts: connect=10, read=20, write=20, pool=10")
 

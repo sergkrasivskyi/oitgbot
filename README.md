@@ -73,6 +73,7 @@ TOP_WHEN_EMPTY_N=10
 DEBUG_OI=0
 
 LOG_FILE=bot.log
+ROLLING_OI_LOG_FILE=rolling_oi.log
 LOG_MAX_BYTES=5000000
 LOG_BACKUP_COUNT=5
 
@@ -107,6 +108,21 @@ The rolling 5m signal state machine uses quantity OI only. It triggers at
 `ROLLING_OI_5M_REARM_PCT`, and remains shadow-only: it logs transitions but
 does not send Telegram messages. Its per-symbol state is in memory and starts
 clean after an application restart.
+
+### Log files
+
+`bot.log` contains legacy and general application runtime logs: scheduler,
+Telegram, legacy OI scans, and application-level diagnostics. `rolling_oi.log`
+contains the rolling OI engine, collector, mark-price stream, rolling analytics,
+and shadow signal state-machine diagnostics. Console output continues to show
+both streams.
+
+```powershell
+Get-Content .\rolling_oi.log -Tail 0 -Wait
+
+Get-Content .\rolling_oi.log -Tail 0 -Wait |
+    Select-String -Pattern 'ROLLING_SIGNAL_SHADOW|ROLLING_SHADOW_SUMMARY'
+```
 
 ### Пояснення ключових параметрів
 

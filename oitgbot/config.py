@@ -43,6 +43,9 @@ class Settings:
     debug_oi: bool = field(default_factory=lambda: _get_bool("DEBUG_OI", "0"))
 
     log_file: str = field(default_factory=lambda: os.environ.get("LOG_FILE", "bot.log"))
+    rolling_oi_log_file: str = field(
+        default_factory=lambda: os.environ.get("ROLLING_OI_LOG_FILE", "rolling_oi.log")
+    )
     log_max_bytes: int = field(default_factory=lambda: _get_int("LOG_MAX_BYTES", "5000000"))
     log_backup_count: int = field(default_factory=lambda: _get_int("LOG_BACKUP_COUNT", "5"))
 
