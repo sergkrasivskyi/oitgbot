@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 
 from ..models import OIRow
+from .rolling_oi_signal_state import RollingOISignalEvent
 
 
 class ReportFormatter:
@@ -38,3 +39,16 @@ class ReportFormatter:
             lines.append(f"{prefix}{oi_str} | {px_str} | {ticker}")
 
         return "\n".join(lines).strip()
+
+    def format_rolling_impulse(self, event: RollingOISignalEvent) -> str:
+        link = self.coinglass_link(event.symbol)
+        ticker = f'<a href="{link}">{html.escape(event.symbol)}</a>'
+        price = (
+            self._fmt_signed(event.price_change_pct)
+            if event.price_change_pct is not None
+            else "NA"
+        )
+        return (
+            "<b>OI% | PX% | Ticker</b>\n\n"
+            f"\u26a1 {self._fmt_signed(event.oi_quantity_change_pct)} | {price} | {ticker}"
+        )

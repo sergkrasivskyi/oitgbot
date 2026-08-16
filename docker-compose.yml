@@ -5,9 +5,12 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      ROLLING_OI_SIGNAL_STATE_FILE: /app/state/rolling_oi_signal_state.json
     volumes:
       - ./bot.log:/app/bot.log
       - ./rolling_oi.log:/app/rolling_oi.log
+      - ./state:/app/state
     command: ["python", "run.py"]
     stop_signal: SIGTERM
     stop_grace_period: 20s

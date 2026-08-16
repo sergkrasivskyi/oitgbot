@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 
 from oitgbot.models import RollingOIWindowResult
@@ -50,6 +50,9 @@ class RollingOISymbolSignalState:
     trigger_value_pct: float | None = None
     last_evaluated_at_utc: datetime | None = None
     last_value_pct: float | None = None
+    transitioned_at_utc: datetime | None = None
+    restored: bool = False
+    restored_at_utc: datetime | None = None
 
 
 class RollingOISignalStateMachine:
@@ -134,12 +137,16 @@ class RollingOISignalStateMachine:
 
         symbol_state.last_evaluated_at_utc = result.latest_timestamp
         symbol_state.last_value_pct = value
+        symbol_state.restored = False
+        symbol_state.restored_at_utc = None
         if event_type is RollingOISignalEventType.TRIGGER:
             symbol_state.triggered_at_utc = result.latest_timestamp
             symbol_state.trigger_value_pct = value
         elif event_type is RollingOISignalEventType.REARM:
             symbol_state.triggered_at_utc = None
             symbol_state.trigger_value_pct = None
+        if event_type is not None:
+            symbol_state.transitioned_at_utc = result.latest_timestamp
         symbol_state.state = new_state
 
         if event_type is None or direction is None:
@@ -181,7 +188,58 @@ class RollingOISignalStateMachine:
             trigger_value_pct=state.trigger_value_pct,
             last_evaluated_at_utc=state.last_evaluated_at_utc,
             last_value_pct=state.last_value_pct,
+            transitioned_at_utc=state.transitioned_at_utc,
+            restored=state.restored,
+            restored_at_utc=state.restored_at_utc,
         )
+
+    def restore(
+        self,
+        symbol: str,
+        state: RollingOISignalState,
+        transitioned_at_utc: datetime,
+        restored_at_utc: datetime,
+    ) -> None:
+        if transitioned_at_utc.tzinfo is None or restored_at_utc.tzinfo is None:
+            raise ValueError("signal state timestamps must be timezone-aware")
+        self._states[symbol] = RollingOISymbolSignalState(
+            state=state,
+            triggered_at_utc=(
+                transitioned_at_utc
+                if state is not RollingOISignalState.NORMAL
+                else None
+            ),
+            transitioned_at_utc=transitioned_at_utc,
+            restored=True,
+            restored_at_utc=restored_at_utc,
+        )
+
+    def snapshot(self) -> dict[str, RollingOISymbolSignalState]:
+        return {symbol: self.state_for(symbol) for symbol in self._states}
+
+    def expire_active(self, reference_utc: datetime, ttl: timedelta) -> int:
+        expired = 0
+        for state in self._states.values():
+            transitioned = state.transitioned_at_utc
+            restored_at = state.restored_at_utc
+            if (
+                state.restored
+                and state.state is not RollingOISignalState.NORMAL
+                and (
+                    transitioned is None
+                    or restored_at is None
+                    or reference_utc - restored_at > ttl
+                    or reference_utc < restored_at
+                )
+            ):
+                state.state = RollingOISignalState.NORMAL
+                state.triggered_at_utc = None
+                state.trigger_value_pct = None
+                state.transitioned_at_utc = reference_utc
+                state.restored = False
+                state.restored_at_utc = None
+                expired += 1
+        return expired
 
     def prune(self, eligible_symbols: Iterable[str]) -> int:
         eligible = set(eligible_symbols)

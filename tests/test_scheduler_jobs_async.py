@@ -9,12 +9,17 @@ from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import patch
 
 from oitgbot.scheduler_jobs import SchedulerJobs
+from oitgbot.models import OIRow
 from oitgbot.services.oi_scanner import OIScanResult, OIScanner
+from oitgbot.services.report_formatter import ReportFormatter
 
 
 class FakeBinanceAPI:
     def get_perpetual_futures_symbols(self) -> list[str]:
         return ["BTCUSDT"]
+
+    def price_change_20m_pct_via_5m(self, _symbol: str) -> float:
+        return 1.25
 
 
 class SlowLegacyScanner:
@@ -70,6 +75,17 @@ class NoopFormatter:
         raise AssertionError("empty legacy scan must not format a report")
 
 
+class RecordingSender:
+    def __init__(self) -> None:
+        self.targets: list[str] = []
+
+    async def send_if_not_empty(
+        self, _chat_id: str, _text: str, *, target_name: str, **_kwargs: object
+    ) -> bool:
+        self.targets.append(target_name)
+        return True
+
+
 TEST_SETTINGS = SimpleNamespace(
     impulse_threshold=5.0,
     top_threshold=1.0,
@@ -103,20 +119,6 @@ class SchedulerEventLoopTests(IsolatedAsyncioTestCase):
         await heartbeat
         await legacy_job
 
-    async def test_slow_impulse_scan_does_not_starve_mark_price_heartbeat(self) -> None:
-        scanner = SlowLegacyScanner()
-        jobs = self.make_jobs(scanner)
-        self.addAsyncCleanup(jobs.close)
-        main_thread = threading.get_ident()
-
-        with patch("oitgbot.scheduler_jobs.settings", TEST_SETTINGS):
-            await self._assert_job_does_not_starve_async_heartbeat(
-                jobs.job_impulses
-            )
-
-        self.assertEqual(1, len(scanner.thread_ids))
-        self.assertNotEqual(main_thread, scanner.thread_ids[0])
-
     async def test_slow_top_scan_does_not_starve_mark_price_heartbeat(self) -> None:
         scanner = SlowLegacyScanner()
         jobs = self.make_jobs(scanner)
@@ -129,16 +131,37 @@ class SchedulerEventLoopTests(IsolatedAsyncioTestCase):
         self.assertEqual(1, len(scanner.thread_ids))
         self.assertNotEqual(main_thread, scanner.thread_ids[0])
 
-    async def test_colliding_legacy_jobs_share_one_outer_worker(self) -> None:
+    async def test_top_remains_publish_capable_with_single_outer_worker(self) -> None:
         scanner = SlowLegacyScanner()
         jobs = self.make_jobs(scanner)
         self.addAsyncCleanup(jobs.close)
 
         with patch("oitgbot.scheduler_jobs.settings", TEST_SETTINGS):
-            await asyncio.gather(jobs.job_impulses(), jobs.job_top())
+            await jobs.job_top()
 
-        self.assertEqual(2, len(scanner.thread_ids))
+        self.assertEqual(1, len(scanner.thread_ids))
         self.assertEqual(1, scanner.peak_active)
+
+    async def test_top_still_publishes_to_all_and_prop(self) -> None:
+        class QualifyingTopScanner(SlowLegacyScanner):
+            def scan_oi_20m_all(self, _symbols: object) -> OIScanResult:
+                now = datetime.now(timezone.utc)
+                return OIScanResult("20m", [OIRow("BTCUSDT", 2.0)], 0, [], now, now, 1)
+
+        sender = RecordingSender()
+        jobs = SchedulerJobs(
+            binance_api=FakeBinanceAPI(),  # type: ignore[arg-type]
+            telegram_sender=sender,  # type: ignore[arg-type]
+            oi_scanner=QualifyingTopScanner(),  # type: ignore[arg-type]
+            report_formatter=ReportFormatter(),
+        )
+        self.addAsyncCleanup(jobs.close)
+        top_settings = SimpleNamespace(
+            **{**vars(TEST_SETTINGS), "prop_symbols": {"BTCUSDT"}, "all_channel_id": "all", "prop_channel_id": "prop"}
+        )
+        with patch("oitgbot.scheduler_jobs.settings", top_settings):
+            await jobs.job_top()
+        self.assertEqual(["all", "prop"], sender.targets)
 
 
 class LegacyFormulaCompatibilityTests(TestCase):

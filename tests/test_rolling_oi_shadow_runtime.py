@@ -143,6 +143,7 @@ class ShadowConfigTests(TestCase):
         self.assertEqual(60, value.rolling_oi_transaction_age_warning_seconds)
         self.assertEqual(5, value.rolling_oi_5m_trigger_pct)
         self.assertEqual(3, value.rolling_oi_5m_rearm_pct)
+        self.assertEqual(15, value.rolling_oi_signal_state_ttl_minutes)
 
     def test_invalid_enabled_shadow_config_fails_clearly(self) -> None:
         value = Settings(
@@ -502,6 +503,6 @@ class ShadowRuntimeEvaluationTests(TestCase):
         self.assertEqual(2, evaluation.active_positive_states)
         self.assertEqual(1, evaluation.active_negative_states)
         output = "\n".join(captured.output)
-        self.assertEqual(2, output.count("ROLLING_SIGNAL_SHADOW event=TRIGGER"))
+        self.assertEqual(2, output.count("ROLLING_SIGNAL event=TRIGGER"))
         self.assertIn("new_positive_triggers=1", output)
         self.assertIn("new_negative_triggers=1", output)

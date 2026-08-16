@@ -45,6 +45,9 @@ class LoggingRoutingTests(unittest.TestCase):
         logging.getLogger("oitgbot.rolling.price_stream").error(
             "unprefixed rolling component failure"
         )
+        logging.getLogger("oitgbot.rolling.signal_publisher").info(
+            "ROLLING_SIGNAL_PUBLISH status=complete"
+        )
 
         # Reconfiguration replaces the owned handlers instead of accumulating them.
         logger_setup.setup_logging()
@@ -55,10 +58,11 @@ class LoggingRoutingTests(unittest.TestCase):
         self.assertIn("Scheduler started", bot_text)
         self.assertNotIn("ROLLING_OI_SHADOW test=true", bot_text)
         self.assertNotIn("unprefixed rolling component failure", bot_text)
+        self.assertNotIn("ROLLING_SIGNAL_PUBLISH", bot_text)
         self.assertNotIn("Scheduler started", rolling_text)
         self.assertIn("ROLLING_OI_SHADOW test=true", rolling_text)
         self.assertIn("unprefixed rolling component failure", rolling_text)
+        self.assertIn("ROLLING_SIGNAL_PUBLISH", rolling_text)
         self.assertEqual(rolling_text.count("one rolling line"), 1)
         self.assertRegex(bot_text, r"^\d{4}-\d{2}-\d{2} .* \| INFO \|")
         self.assertRegex(rolling_text, r"^\d{4}-\d{2}-\d{2} .* \| INFO \|")
-

@@ -81,7 +81,7 @@ BINANCE_BASE_URL=https://fapi.binance.com
 HTTP_TIMEOUT=5
 HTTP_RETRIES=1
 
-# Rolling OI shadow mode (diagnostics only; Telegram remains legacy-driven)
+# Rolling OI runtime (production 5m alerts; longer windows remain observational)
 ROLLING_OI_SHADOW_ENABLED=1
 ROLLING_OI_CADENCE_SECONDS=30
 ROLLING_OI_WORKERS=20
@@ -92,6 +92,8 @@ ROLLING_OI_TRANSACTION_AGE_WARNING_SECONDS=60
 ROLLING_OI_5M_OBSERVATION_PCT=2
 ROLLING_OI_5M_TRIGGER_PCT=5
 ROLLING_OI_5M_REARM_PCT=3
+ROLLING_OI_SIGNAL_STATE_FILE=rolling_oi_signal_state.json
+ROLLING_OI_SIGNAL_STATE_TTL_MINUTES=15
 ROLLING_OI_20M_OBSERVATION_PCT=1
 ROLLING_OI_60M_OBSERVATION_PCT=3
 ROLLING_OI_120M_OBSERVATION_PCT=4
@@ -103,25 +105,55 @@ as a compatibility fallback but no longer rejects present OI because Binance's
 transaction timestamp is old. `ROLLING_OI_TRANSACTION_AGE_WARNING_SECONDS`
 controls diagnostics only.
 
-The rolling 5m signal state machine uses quantity OI only. It triggers at
-`ROLLING_OI_5M_TRIGGER_PCT`, re-arms at
-`ROLLING_OI_5M_REARM_PCT`, and remains shadow-only: it logs transitions but
-does not send Telegram messages. Its per-symbol state is in memory and starts
-clean after an application restart.
+The production 5m IMPULSE signal uses rolling current OI quantity only. It is
+evaluated after each rolling collection cycle (30 seconds by default), triggers
+at `ROLLING_OI_5M_TRIGGER_PCT` (5%), and re-arms at
+`ROLLING_OI_5M_REARM_PCT` (3%). A persistent positive or negative extreme
+produces one Telegram alert; REARM is diagnostic only and permits a later new
+crossing. Price and derived OI USD are optional display context, never trigger
+conditions.
+
+Recent per-symbol triggered state is written atomically to
+`ROLLING_OI_SIGNAL_STATE_FILE`. On restart it suppresses a duplicate alert for
+the same continuous extreme. Restored state expires after
+`ROLLING_OI_SIGNAL_STATE_TTL_MINUTES` (15 minutes by default) unless a valid
+rolling observation confirms it. Missing, corrupt, incompatible, or stale state
+starts safely. The rolling data window itself is never seeded from historical OI
+and still warms naturally.
+
+```text
+Current OI REST (~30s)
+        |
+        v
+RollingOIStore
+        |
+        v
+5m quantity change
+        |
+        v
+Signal State Machine
+5% trigger / 3% rearm
+        |
+        v
+Telegram IMPULSE
+```
+
+The 20m TOP report remains on the legacy Binance historical-OI path.
+Docker Compose persists the signal-state JSON under the host `state` directory.
 
 ### Log files
 
 `bot.log` contains legacy and general application runtime logs: scheduler,
-Telegram, legacy OI scans, and application-level diagnostics. `rolling_oi.log`
+Telegram, legacy 20m TOP scans, and application-level diagnostics. `rolling_oi.log`
 contains the rolling OI engine, collector, mark-price stream, rolling analytics,
-and shadow signal state-machine diagnostics. Console output continues to show
-both streams.
+production 5m signal/publish diagnostics, persistence, and remaining shadow
+analytics. Console output continues to show both streams.
 
 ```powershell
 Get-Content .\rolling_oi.log -Tail 0 -Wait
 
 Get-Content .\rolling_oi.log -Tail 0 -Wait |
-    Select-String -Pattern 'ROLLING_SIGNAL_SHADOW|ROLLING_SHADOW_SUMMARY'
+    Select-String -Pattern 'ROLLING_SIGNAL|ROLLING_SIGNAL_PUBLISH'
 ```
 
 ### Пояснення ключових параметрів
@@ -225,7 +257,7 @@ docker compose up -d --build
 
 ## Розклад (cron)
 
-* **HH (impulses)**: кожні 5 хвилин `*/5` на `second=0`
+* **5m IMPULSE**: rolling collector cycle, every 30 seconds by default (no cron)
 * **All (top)**: `minute=0,20,40` на `second=10`
 
 ---

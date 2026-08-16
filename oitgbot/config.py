@@ -88,6 +88,16 @@ class Settings:
     rolling_oi_5m_rearm_pct: float = field(
         default_factory=lambda: _get_float("ROLLING_OI_5M_REARM_PCT", "3")
     )
+    rolling_oi_signal_state_file: str = field(
+        default_factory=lambda: os.environ.get(
+            "ROLLING_OI_SIGNAL_STATE_FILE", "rolling_oi_signal_state.json"
+        )
+    )
+    rolling_oi_signal_state_ttl_minutes: float = field(
+        default_factory=lambda: _get_float(
+            "ROLLING_OI_SIGNAL_STATE_TTL_MINUTES", "15"
+        )
+    )
     rolling_oi_20m_observation_pct: float = field(
         default_factory=lambda: _get_float("ROLLING_OI_20M_OBSERVATION_PCT", "1")
     )
@@ -150,6 +160,15 @@ class Settings:
                     "ROLLING_OI_5M_REARM_PCT must be less than "
                     "ROLLING_OI_5M_TRIGGER_PCT"
                 )
+            if (
+                not math.isfinite(self.rolling_oi_signal_state_ttl_minutes)
+                or self.rolling_oi_signal_state_ttl_minutes <= 0
+            ):
+                invalid.append(
+                    "ROLLING_OI_SIGNAL_STATE_TTL_MINUTES must be finite and > 0"
+                )
+            if not self.rolling_oi_signal_state_file.strip():
+                invalid.append("ROLLING_OI_SIGNAL_STATE_FILE must not be empty")
             if invalid:
                 raise RuntimeError("Invalid rolling OI shadow config: " + "; ".join(invalid))
 

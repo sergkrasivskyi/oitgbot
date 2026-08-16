@@ -28,6 +28,9 @@ from oitgbot.services.rolling_oi_signal_state import (
     RollingOISignalEventType,
     RollingOISignalStateMachine,
 )
+from oitgbot.services.rolling_oi_signal_persistence import (
+    RollingOISignalStatePersistence,
+)
 
 logger = logging.getLogger("oitgbot.rolling.runtime")
 
@@ -106,6 +109,8 @@ class RollingOIShadowRuntime:
         stream_factory: Callable[[PriceStateStore], Any] = MarkPriceStream,
         budget_factory: Callable[[Iterable[Any]], Any] = RateLimitBudget,
         collector_factory: Callable[..., Any] = CurrentOICollector,
+        signal_publisher: Any | None = None,
+        signal_state_persistence: RollingOISignalStatePersistence | None = None,
     ) -> None:
         if cadence_seconds <= 0 or not math.isfinite(cadence_seconds):
             raise ValueError("cadence_seconds must be finite and positive")
@@ -149,6 +154,8 @@ class RollingOIShadowRuntime:
         self._clock = clock
         self._budget_factory = budget_factory
         self._collector_factory = collector_factory
+        self.signal_publisher = signal_publisher
+        self.signal_state_persistence = signal_state_persistence
 
         self.price_state = PriceStateStore(())
         self.rolling_store = RollingOIStore(
@@ -168,6 +175,7 @@ class RollingOIShadowRuntime:
         self._stream_task: asyncio.Task[None] | None = None
         self._initialization_task: asyncio.Task[None] | None = None
         self._periodic_task: asyncio.Task[None] | None = None
+        self._publish_tasks: set[asyncio.Task[Any]] = set()
         self._stop_event = asyncio.Event()
         self._started = False
         self._stopped = False
@@ -177,6 +185,8 @@ class RollingOIShadowRuntime:
         self._last_cycle_state = "not_started"
         self._rate_budget_state = "NOT_INITIALIZED"
         self._last_evaluation: RollingShadowEvaluation | None = None
+        self._last_signal_events: tuple[RollingOISignalEvent, ...] = ()
+        self._signal_state_changed = False
 
     async def start(self) -> None:
         if self._started:
@@ -218,6 +228,12 @@ class RollingOIShadowRuntime:
         try:
             symbols = await asyncio.to_thread(self._load_symbols)
             self.price_state.set_eligible_symbols(symbols)
+            if self.signal_state_persistence is not None:
+                await asyncio.to_thread(
+                    self.signal_state_persistence.load,
+                    self.signal_state_machine,
+                    self._clock(),
+                )
             rate_limits = await asyncio.to_thread(
                 self.binance_api.get_request_weight_limits
             )
@@ -318,6 +334,9 @@ class RollingOIShadowRuntime:
                 log_candidates=result.samples_inserted > 0,
                 eligible_symbols=symbols,
             )
+            if self._signal_state_changed:
+                await self._persist_signal_state(result.cycle_finished_at_utc)
+            self._schedule_trigger_publications(self._last_signal_events)
             return result
         except asyncio.CancelledError:
             raise
@@ -349,6 +368,17 @@ class RollingOIShadowRuntime:
             else self.rolling_store.symbols()
         )
         self.signal_state_machine.prune(symbols)
+        expired_states = 0
+        if self.signal_state_persistence is not None:
+            expired_states = self.signal_state_machine.expire_active(
+                cycle.cycle_finished_at_utc,
+                self.signal_state_persistence.ttl,
+            )
+            if expired_states:
+                logger.info(
+                    "ROLLING_SIGNAL_STATE status=expired active_states=%d",
+                    expired_states,
+                )
         windows: dict[int, list[RollingOIWindowResult]] = {
             seconds: [] for seconds in self.observation_thresholds
         }
@@ -413,6 +443,8 @@ class RollingOIShadowRuntime:
             for seconds, pairs in long_metrics.items()
         }
         signal_events = self.signal_state_machine.evaluate_batch(windows[300])
+        self._last_signal_events = signal_events
+        self._signal_state_changed = bool(signal_events) or bool(expired_states)
         new_positive_triggers = sum(
             event.event_type is RollingOISignalEventType.TRIGGER
             and event.direction is RollingOISignalDirection.POSITIVE
@@ -515,7 +547,7 @@ class RollingOIShadowRuntime:
     def _log_signal_events(events: Sequence[RollingOISignalEvent]) -> None:
         for event in events:
             logger.info(
-                "ROLLING_SIGNAL_SHADOW event=%s direction=%s symbol=%s oi_5m=%s "
+                "ROLLING_SIGNAL event=%s direction=%s symbol=%s oi_5m=%s "
                 "threshold=%.2f rearm=%.2f previous=%s new=%s price_5m=%s "
                 "oi_usd_5m=%s latest_utc=%s baseline_utc=%s actual_window_s=%s",
                 event.event_type.value,
@@ -539,6 +571,57 @@ class RollingOIShadowRuntime:
                     else "NA"
                 ),
                 _metric(event.actual_window_seconds),
+            )
+
+    async def _persist_signal_state(self, saved_at_utc: datetime) -> None:
+        persistence = self.signal_state_persistence
+        if persistence is None:
+            return
+        try:
+            await asyncio.to_thread(
+                persistence.save,
+                self.signal_state_machine,
+                saved_at_utc,
+            )
+        except Exception:
+            logger.exception(
+                "ROLLING_SIGNAL_STATE status=save_failed path=%s",
+                persistence.path,
+            )
+
+    def _schedule_trigger_publications(
+        self, events: Sequence[RollingOISignalEvent]
+    ) -> None:
+        if self.signal_publisher is None:
+            return
+        for event in events:
+            if event.event_type is not RollingOISignalEventType.TRIGGER:
+                continue
+            task = asyncio.create_task(
+                self.signal_publisher.publish(event),
+                name=f"rolling-oi-publish-{event.symbol}",
+            )
+            self._publish_tasks.add(task)
+            task.add_done_callback(
+                lambda completed, symbol=event.symbol: self._publish_done(
+                    symbol, completed
+                )
+            )
+            task.add_done_callback(self._publish_tasks.discard)
+
+    @staticmethod
+    def _publish_done(symbol: str, task: asyncio.Task[Any]) -> None:
+        if task.cancelled():
+            logger.error(
+                "ROLLING_SIGNAL_PUBLISH status=cancelled symbol=%s", symbol
+            )
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(
+                "ROLLING_SIGNAL_PUBLISH status=failed symbol=%s error=%s",
+                symbol,
+                type(error).__name__,
             )
 
     def _log_short_candidates(
@@ -695,4 +778,6 @@ class RollingOIShadowRuntime:
         if self._stream_task is not None:
             with contextlib.suppress(Exception):
                 await self._stream_task
+        if self._publish_tasks:
+            await asyncio.gather(*self._publish_tasks, return_exceptions=True)
         logger.info("ROLLING_SHADOW_STATUS status=stopped")

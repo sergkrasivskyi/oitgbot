@@ -16,15 +16,30 @@ from .logger_setup import setup_logging
 from .scheduler_jobs import SchedulerJobs
 from .services.oi_scanner import OIScanner
 from .services.report_formatter import ReportFormatter
+from .services.rolling_impulse_publisher import RollingImpulsePublisher
 from .services.rolling_oi_shadow_runtime import RollingOIShadowRuntime
+from .services.rolling_oi_signal_persistence import RollingOISignalStatePersistence
 
 
 def build_shadow_runtime(
     binance_api: BinanceAPI,
     jobs: SchedulerJobs,
+    telegram_sender: TelegramSender | None = None,
+    report_formatter: ReportFormatter | None = None,
 ) -> RollingOIShadowRuntime | None:
     if not settings.rolling_oi_shadow_enabled:
         return None
+    publisher = (
+        RollingImpulsePublisher(
+            telegram_sender,
+            report_formatter,
+            all_channel_id=settings.all_channel_id,
+            prop_channel_id=settings.prop_channel_id,
+            prop_symbols=settings.prop_symbols,
+        )
+        if telegram_sender is not None and report_formatter is not None
+        else None
+    )
     return RollingOIShadowRuntime(
         binance_api,
         jobs.get_symbols_cached,
@@ -44,6 +59,27 @@ def build_shadow_runtime(
         observation_20m_pct=settings.rolling_oi_20m_observation_pct,
         observation_60m_pct=settings.rolling_oi_60m_observation_pct,
         observation_120m_pct=settings.rolling_oi_120m_observation_pct,
+        signal_publisher=publisher,
+        signal_state_persistence=RollingOISignalStatePersistence(
+            settings.rolling_oi_signal_state_file,
+            settings.rolling_oi_signal_state_ttl_minutes,
+        ),
+    )
+
+
+def configure_scheduler(
+    scheduler: AsyncIOScheduler,
+    jobs: SchedulerJobs,
+) -> None:
+    """Register the remaining legacy 20m TOP production schedule."""
+    scheduler.add_job(
+        jobs.job_top,
+        CronTrigger(minute="0,20,40", second=10),
+        id="top_20m",
+        replace_existing=True,
+        coalesce=True,
+        misfire_grace_time=60,
+        max_instances=1,
     )
 
 
@@ -99,7 +135,9 @@ async def main_async() -> None:
         )
 
         if settings.rolling_oi_shadow_enabled:
-            shadow_runtime = build_shadow_runtime(binance_api, jobs)
+            shadow_runtime = build_shadow_runtime(
+                binance_api, jobs, telegram_sender, report_formatter
+            )
             assert shadow_runtime is not None
             jobs.shadow_runtime = shadow_runtime
             await shadow_runtime.start()
@@ -110,36 +148,18 @@ async def main_async() -> None:
 
         scheduler = AsyncIOScheduler(event_loop=loop)
 
-        scheduler.add_job(
-            jobs.job_impulses,
-            CronTrigger(minute="*/5", second=0),
-            id="impulses_5m",
-            replace_existing=True,
-            coalesce=True,
-            misfire_grace_time=60,
-            max_instances=1,
-        )
-
-        scheduler.add_job(
-            jobs.job_top,
-            CronTrigger(minute="0,20,40", second=10),
-            id="top_20m",
-            replace_existing=True,
-            coalesce=True,
-            misfire_grace_time=60,
-            max_instances=1,
-        )
+        configure_scheduler(scheduler, jobs)
 
         scheduler.start()
 
-        log.info("Publisher started. impulses=*/5@sec0, top=0,20,40@sec10")
+        log.info("Publisher started. rolling_impulses=collector-cycle, top=0,20,40@sec10")
         log.info(
-            "Thresholds: impulse=%.2f%%, top=%.2f%%, send_empty=%s, fallback=%s, fallback_n=%d, debug=%s",
-            settings.impulse_threshold,
+            "Thresholds: rolling_impulse_trigger=%.2f%%, rolling_impulse_rearm=%.2f%%, "
+            "top=%.2f%%, send_empty=%s, debug=%s",
+            settings.rolling_oi_5m_trigger_pct,
+            settings.rolling_oi_5m_rearm_pct,
             settings.top_threshold,
             settings.send_empty_reports,
-            settings.show_top_when_empty,
-            settings.top_when_empty_n,
             settings.debug_oi,
         )
         log.info("PROP symbols loaded: %d", len(settings.prop_symbols))
