@@ -1,32 +1,40 @@
 # Current project handoff
 
-## Completed state
+## Current state
 
-- Tasks 7–14 are complete.
-- Task 13 rolling 5m signal state machine: CODE PASS and LIVE PASS.
-- Task 14 split runtime logging: CODE PASS and LIVE PASS.
-- Task 15 is the rolling-current-OI production cutover for 5m IMPULSE alerts.
+- Task 15: CODE PASS; production 5m IMPULSE rolling cutover complete.
+- Task 16: ongoing non-blocking live stabilization; field validation continues
+  during development.
+- Task 17: production 20m TOP cut over to rolling current OI quantity.
 
-## Product decisions
+## Product architecture after Task 17
 
-- OI quantity (Coins) is the primary metric. OI USD is optional context.
-- Price is optional context and never gates a quantity-based signal.
-- The time-sensitive 5m IMPULSE product is migrated before 20m TOP.
-- Legacy historical 5m is not a production fallback or a long-term publisher.
-- Legacy code remains only where still required, especially for 20m TOP.
-- Telegram UX stays close to the existing report during cutover.
-- A faster cadence such as 20 seconds is deferred until production is stable.
+- 5m IMPULSE → rolling current OI quantity → production, event-driven at 5%
+  trigger / 3% rearm.
+- 20m TOP → rolling current OI quantity → production, scheduled at minutes
+  0/20/40, second 10, with a +1% threshold.
+- 60m → rolling shadow/observational analytics only.
+- 120m → rolling shadow/observational analytics only.
+- Historical OI → no longer part of normal production 5m/20m signaling.
 
-## Roadmap
+OI quantity (Coins) is the primary metric. OI USD and price are optional
+context. The production TOP job reads the in-memory RollingOIStore and adds no
+historical OI, current-OI, or kline request. After a cold restart, TOP warms
+naturally for approximately 20 minutes and has no historical fallback.
 
-- Task 15: 5m IMPULSE → rolling production.
-- Task 16: post-cutover live validation, stabilization, and focused cleanup.
-- Task 17: 20m TOP → rolling 20m.
-- Task 18: 60m Slow Accumulation product/report design and implementation.
-- Task 19: 120m Long Accumulation, after validating the value of the 60m layer.
+## Near-term roadmap
 
-Task 16 is a production stabilization gate, not another feature migration. Live
-validation must cover actual rolling Telegram timing, persistent-extreme
-deduplication, REARM, restart duplicate suppression, Telegram failure
-observability, collector timing, quantity and price-context coverage, no 20m TOP
-regression, and no rolling/legacy double publishing.
+- Task 17: rolling 20m TOP / accumulation production cutover.
+- Task 18: tablet test release.
+
+Task 18 will prepare a long-running field-test version containing production
+rolling 5m IMPULSE, production rolling 20m TOP, `bot.log`, `rolling_oi.log`,
+`rolling_oi_signal_state.json`, tablet deployment/runtime checks, and a simple
+log export utility. The planned `deploy/tablet/collect-logs.sh` should create a
+timestamped ZIP containing `bot.log`, `rolling_oi.log`, the signal-state JSON,
+and `runtime_info.txt`. Runtime metadata should include the git commit, branch,
+Python version, timezone/current time, and useful process/runtime information.
+
+The tablet release and export script are not part of Task 17. Decisions about
+Price Action + OI classification, 60m/120m accumulation, threshold tuning, and
+possible cadence optimization will follow several days of observed tablet data.

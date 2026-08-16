@@ -14,7 +14,6 @@ from .clients.telegram_sender import TelegramSender
 from .config import settings
 from .logger_setup import setup_logging
 from .scheduler_jobs import SchedulerJobs
-from .services.oi_scanner import OIScanner
 from .services.report_formatter import ReportFormatter
 from .services.rolling_impulse_publisher import RollingImpulsePublisher
 from .services.rolling_oi_shadow_runtime import RollingOIShadowRuntime
@@ -71,7 +70,7 @@ def configure_scheduler(
     scheduler: AsyncIOScheduler,
     jobs: SchedulerJobs,
 ) -> None:
-    """Register the remaining legacy 20m TOP production schedule."""
+    """Register the rolling 20m TOP production snapshot schedule."""
     scheduler.add_job(
         jobs.job_top,
         CronTrigger(minute="0,20,40", second=10),
@@ -124,13 +123,11 @@ async def main_async() -> None:
         log.info("Initializing services...")
         binance_api = BinanceAPI()
         telegram_sender = TelegramSender(app)
-        oi_scanner = OIScanner(binance_api)
         report_formatter = ReportFormatter()
 
         jobs = SchedulerJobs(
             binance_api=binance_api,
             telegram_sender=telegram_sender,
-            oi_scanner=oi_scanner,
             report_formatter=report_formatter,
         )
 
@@ -152,7 +149,10 @@ async def main_async() -> None:
 
         scheduler.start()
 
-        log.info("Publisher started. rolling_impulses=collector-cycle, top=0,20,40@sec10")
+        log.info(
+            "Publisher started. rolling_impulses=collector-cycle, "
+            "rolling_top=0,20,40@sec10"
+        )
         log.info(
             "Thresholds: rolling_impulse_trigger=%.2f%%, rolling_impulse_rearm=%.2f%%, "
             "top=%.2f%%, send_empty=%s, debug=%s",
@@ -188,11 +188,6 @@ async def main_async() -> None:
                 if scheduler.running:
                     scheduler.shutdown(wait=False)
                     log.info("Scheduler stopped")
-
-        if jobs is not None:
-            with contextlib.suppress(Exception):
-                await jobs.close()
-                log.info("Legacy job executor stopped")
 
         if binance_api is not None:
             with contextlib.suppress(Exception):

@@ -240,7 +240,7 @@ class RollingSignalPersistenceTests(TestCase):
 
 
 class ProductionSchedulerTests(TestCase):
-    def test_only_legacy_top_is_scheduled(self) -> None:
+    def test_only_rolling_top_snapshot_is_scheduled(self) -> None:
         calls: list[tuple[object, dict[str, object]]] = []
         scheduler = SimpleNamespace(
             add_job=lambda function, *args, **kwargs: calls.append((function, kwargs))

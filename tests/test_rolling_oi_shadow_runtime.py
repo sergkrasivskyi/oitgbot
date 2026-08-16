@@ -12,7 +12,6 @@ from oitgbot.config import Settings
 from oitgbot.models import (
     BinanceRateLimit,
     CurrentOpenInterest,
-    OIRow,
     RollingOISample,
 )
 from oitgbot.services.current_oi_collector import (
@@ -450,14 +449,12 @@ class ShadowRuntimeEvaluationTests(TestCase):
 
         with self.assertLogs("oitgbot.rolling.runtime", level="INFO") as captured:
             runtime.evaluate_and_log(cycle_result())
-            runtime.compare_legacy(300, [OIRow("BTCUSDT", 0.0)])
 
         output = "\n".join(captured.output)
         self.assertIn("ROLLING_SHADOW_SUMMARY", output)
         self.assertIn("ROLLING_OI_SHADOW", output)
         self.assertIn("SLOW_ACCUMULATION_SHADOW", output)
         self.assertIn("LONG_ACCUMULATION_SHADOW", output)
-        self.assertIn("OI_SHADOW_COMPARE", output)
 
     def test_shadow_runtime_has_no_telegram_dependency_or_send_path(self) -> None:
         runtime = self.make_runtime()

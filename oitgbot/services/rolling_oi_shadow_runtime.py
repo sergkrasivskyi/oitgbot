@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from oitgbot.models import OIRow, RollingOIWindowResult
+from oitgbot.models import RollingOIWindowResult
 from oitgbot.services.current_oi_collector import (
     CurrentOICollector,
     CurrentOICycleResult,
@@ -84,8 +84,18 @@ class RollingShadowHealth:
     rate_budget_state: str
 
 
+@dataclass(frozen=True, slots=True)
+class RollingTopSnapshot:
+    report_utc: datetime
+    symbol_count: int
+    ready_20m: int
+    price_ready_20m: int
+    quantity_sample_coverage: float
+    results: tuple[RollingOIWindowResult, ...]
+
+
 class RollingOIShadowRuntime:
-    """Own the rolling OI shadow services without any Telegram dependency."""
+    """Own rolling current-OI services and observational long-window analytics."""
 
     def __init__(
         self,
@@ -680,59 +690,48 @@ class RollingOIShadowRuntime:
                 _pct(metrics.max_5m_change_pct),
             )
 
-    def compare_legacy(self, window_seconds: int, rows: Sequence[OIRow]) -> None:
-        """Log a bounded comparison when an existing legacy job already has data."""
-        if window_seconds not in (300, 1200):
-            return
-        threshold = self.observation_thresholds[window_seconds]
-        comparisons: list[tuple[float, OIRow, RollingOIWindowResult]] = []
-        for row in rows:
-            latest = self.rolling_store.latest(row.symbol)
+    def rolling_top_snapshot(self) -> RollingTopSnapshot:
+        """Build a network-free 20m snapshot from already collected samples."""
+        report_utc = self._clock()
+        symbols = self.rolling_store.symbols()
+        results: list[RollingOIWindowResult] = []
+        for symbol in symbols:
+            latest = self.rolling_store.latest(symbol)
             if latest is None:
                 continue
-            latest_age = (self._clock() - latest.observed_at_utc).total_seconds()
-            if (
-                latest_age < 0
-                or latest_age > self.observation_max_age_seconds
-            ):
+            latest_age = (report_utc - latest.observed_at_utc).total_seconds()
+            if latest_age < 0 or latest_age > self.observation_max_age_seconds:
                 continue
             try:
-                rolling = self.calculator.calculate(
-                    self.rolling_store, row.symbol, window_seconds
+                result = self.calculator.calculate_20m(
+                    self.rolling_store, symbol
                 )
             except Exception:
                 logger.exception(
-                    "ROLLING_SHADOW_SYMBOL_ERROR symbol=%s window_s=%d comparison=true",
-                    row.symbol,
-                    window_seconds,
+                    "ROLLING_TOP_SYMBOL_ERROR symbol=%s", symbol
                 )
                 continue
-            if not rolling.available or rolling.oi_quantity_change_pct is None:
-                continue
-            difference = rolling.oi_quantity_change_pct - row.oi_pct
-            if (
-                abs(row.oi_pct) >= threshold
-                or abs(rolling.oi_quantity_change_pct) >= threshold
-                or abs(difference) >= threshold
-            ):
-                comparisons.append((abs(difference), row, rolling))
-        for _magnitude, row, rolling in sorted(
-            comparisons, key=lambda item: item[0], reverse=True
-        )[:20]:
-            difference = (rolling.oi_quantity_change_pct or 0.0) - row.oi_pct
-            logger.info(
-                "OI_SHADOW_COMPARE symbol=%s legacy_window=%dm legacy_oi_pct=%+.2f "
-                "rolling_quantity_pct=%s rolling_usd_pct=%s rolling_price_pct=%s "
-                "legacy_latest_utc=NA rolling_latest_utc=%s difference_pp=%+.2f",
-                row.symbol,
-                window_seconds // 60,
-                row.oi_pct,
-                _pct(rolling.oi_quantity_change_pct),
-                _pct(rolling.oi_value_change_pct),
-                _pct(rolling.price_change_pct),
-                rolling.latest_timestamp.isoformat() if rolling.latest_timestamp else "NA",
-                difference,
-            )
+            if result.available and result.oi_quantity_change_pct is not None:
+                results.append(result)
+        results.sort(
+            key=lambda item: item.oi_quantity_change_pct or 0.0,
+            reverse=True,
+        )
+        quantity_coverage = (
+            self._last_evaluation.quantity_sample_coverage
+            if self._last_evaluation is not None
+            else 0.0
+        )
+        return RollingTopSnapshot(
+            report_utc=report_utc,
+            symbol_count=len(symbols),
+            ready_20m=len(results),
+            price_ready_20m=sum(
+                result.price_change_pct is not None for result in results
+            ),
+            quantity_sample_coverage=quantity_coverage,
+            results=tuple(results),
+        )
 
     def health(self) -> RollingShadowHealth:
         now = self._clock()

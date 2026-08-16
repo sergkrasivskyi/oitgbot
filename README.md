@@ -81,7 +81,7 @@ BINANCE_BASE_URL=https://fapi.binance.com
 HTTP_TIMEOUT=5
 HTTP_RETRIES=1
 
-# Rolling OI runtime (production 5m alerts; longer windows remain observational)
+# Rolling OI runtime (production 5m and 20m; longer windows observational)
 ROLLING_OI_SHADOW_ENABLED=1
 ROLLING_OI_CADENCE_SECONDS=30
 ROLLING_OI_WORKERS=20
@@ -122,46 +122,70 @@ starts safely. The rolling data window itself is never seeded from historical OI
 and still warms naturally.
 
 ```text
-Current OI REST (~30s)
-        |
-        v
-RollingOIStore
-        |
-        v
-5m quantity change
-        |
-        v
-Signal State Machine
-5% trigger / 3% rearm
-        |
-        v
-Telegram IMPULSE
+Binance Current OI REST (~30s)
+              |
+              v
+        RollingOIStore
+             / \
+            /   \
+          5m    20m
+           |      |
+       IMPULSE    TOP
+        5%/3%     >=1%
+           |      |
+      immediate   00/20/40 @ second 10
+           |      |
+           +-- Telegram --+
 ```
 
-The 20m TOP report remains on the legacy Binance historical-OI path.
+The production 20m TOP is an in-memory rolling quantity ranking. It includes
+symbols at `TOP_THRESHOLD` (+1% by default), sorts them descending, and retains
+ALL/PROP delivery. Its PX% value comes from existing rolling price context and
+renders as `NA` when unavailable; price never gates an OI candidate. A cold
+restart requires a natural approximately 20-minute warm-up. During warm-up the
+scheduled report is skipped without a historical fallback or fake empty report.
+
+No production 5m or 20m report uses historical `openInterestHist`. The normal
+TOP job also makes no current-OI or kline request; it consumes samples already
+collected at the unchanged 30-second cadence. Rolling 60m and 120m analytics
+remain observational only.
 Docker Compose persists the signal-state JSON under the host `state` directory.
 
 ### Log files
 
-`bot.log` contains legacy and general application runtime logs: scheduler,
-Telegram, legacy 20m TOP scans, and application-level diagnostics. `rolling_oi.log`
+`bot.log` contains general application, scheduler, and Telegram diagnostics.
+`rolling_oi.log`
 contains the rolling OI engine, collector, mark-price stream, rolling analytics,
-production 5m signal/publish diagnostics, persistence, and remaining shadow
-analytics. Console output continues to show both streams.
+production 5m signal/publish diagnostics, rolling 20m TOP diagnostics, and
+remaining shadow analytics. Console output continues to show both streams.
 
 ```powershell
 Get-Content .\rolling_oi.log -Tail 0 -Wait
 
 Get-Content .\rolling_oi.log -Tail 0 -Wait |
     Select-String -Pattern 'ROLLING_SIGNAL|ROLLING_SIGNAL_PUBLISH'
+
+Get-Content .\rolling_oi.log -Tail 0 -Wait |
+    Select-String -Pattern 'ROLLING_TOP_SUMMARY|ROLLING_TOP_PUBLISH|ROLLING_TOP_SKIP'
 ```
+
+### Near-term roadmap
+
+Task 18 is the tablet test release for the production rolling 5m/20m stack. It
+will add deployment/runtime checks and a planned
+`deploy/tablet/collect-logs.sh` utility that exports `bot.log`,
+`rolling_oi.log`, `rolling_oi_signal_state.json`, and runtime metadata into a
+timestamped ZIP. That deployment and export tooling is intentionally deferred
+from Task 17. Several days of tablet data will guide later price/OI
+classification, 60m/120m product decisions, threshold tuning, and any cadence
+optimization.
 
 ### Пояснення ключових параметрів
 
-* `IMPULSE_THRESHOLD` — поріг OI% за 5 хв (імпульси)
+* `ROLLING_OI_5M_TRIGGER_PCT` / `ROLLING_OI_5M_REARM_PCT` — production 5m hysteresis
 * `TOP_THRESHOLD` — поріг OI% за 20 хв (звіт All)
 * `SEND_EMPTY_REPORTS=1` — надсилати повідомлення навіть якщо сигналів нема (з приміткою)
-* `SHOW_TOP_WHEN_EMPTY=1` — якщо імпульсів нема, відправляти fallback TOP-N
+* `IMPULSE_THRESHOLD` / `SHOW_TOP_WHEN_EMPTY` — retained legacy configuration; not production 5m inputs
 * `HTTP_TIMEOUT/HTTP_RETRIES` — важливо для нестабільного інтернету
 
 ---
@@ -258,7 +282,7 @@ docker compose up -d --build
 ## Розклад (cron)
 
 * **5m IMPULSE**: rolling collector cycle, every 30 seconds by default (no cron)
-* **All (top)**: `minute=0,20,40` на `second=10`
+* **20m TOP**: rolling in-memory snapshot at `minute=0,20,40`, `second=10`
 
 ---
 

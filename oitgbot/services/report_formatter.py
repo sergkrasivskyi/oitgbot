@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import html
 
-from ..models import OIRow
+from ..models import OIRow, RollingOIWindowResult
 from .rolling_oi_signal_state import RollingOISignalEvent
 
 
@@ -52,3 +52,26 @@ class ReportFormatter:
             "<b>OI% | PX% | Ticker</b>\n\n"
             f"\u26a1 {self._fmt_signed(event.oi_quantity_change_pct)} | {price} | {ticker}"
         )
+
+    def format_rolling_top(
+        self,
+        results: list[RollingOIWindowResult],
+        empty_note: str | None = None,
+    ) -> str:
+        header = "<b>OI% | PX% | Ticker</b>"
+        if not results and empty_note:
+            return f"{header}\n\n{html.escape(empty_note)}"
+        lines = [header, ""]
+        for result in results:
+            link = self.coinglass_link(result.symbol)
+            ticker = f'<a href="{link}">{html.escape(result.symbol)}</a>'
+            price = (
+                self._fmt_signed(result.price_change_pct)
+                if result.price_change_pct is not None
+                else "NA"
+            )
+            lines.append(
+                f"{self._fmt_signed(result.oi_quantity_change_pct or 0.0)} | "
+                f"{price} | {ticker}"
+            )
+        return "\n".join(lines).strip()

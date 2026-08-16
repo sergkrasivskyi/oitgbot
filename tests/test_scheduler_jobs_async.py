@@ -1,170 +1,213 @@
 from __future__ import annotations
 
-import asyncio
+import inspect
 import threading
-import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import patch
 
+from oitgbot.app import configure_scheduler, main_async
+from oitgbot.models import RollingOISample
 from oitgbot.scheduler_jobs import SchedulerJobs
-from oitgbot.models import OIRow
-from oitgbot.services.oi_scanner import OIScanResult, OIScanner
 from oitgbot.services.report_formatter import ReportFormatter
+from oitgbot.services.rolling_oi_shadow_runtime import RollingOIShadowRuntime
+
+NOW = datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc)
 
 
-class FakeBinanceAPI:
-    def get_perpetual_futures_symbols(self) -> list[str]:
-        return ["BTCUSDT"]
-
-    def price_change_20m_pct_via_5m(self, _symbol: str) -> float:
-        return 1.25
-
-
-class SlowLegacyScanner:
-    def __init__(self) -> None:
-        self.thread_ids: list[int] = []
-        self.active = 0
-        self.peak_active = 0
-        self._lock = threading.Lock()
-
-    def _scan(self, window: str) -> OIScanResult:
-        self.thread_ids.append(threading.get_ident())
-        with self._lock:
-            self.active += 1
-            self.peak_active = max(self.peak_active, self.active)
-        try:
-            time.sleep(0.1)
-        finally:
-            with self._lock:
-                self.active -= 1
-        now = datetime.now(timezone.utc)
-        return OIScanResult(window, [], 0, [], now, now, 1)
-
-    def scan_oi_5m_all(self, _symbols: object) -> OIScanResult:
-        return self._scan("5m")
-
-    def scan_oi_20m_all(self, _symbols: object) -> OIScanResult:
-        return self._scan("20m")
-
-    @staticmethod
-    def log_scan_diagnostics(_result: OIScanResult) -> None:
-        return None
-
-    @staticmethod
-    def log_top(*_args: object, **_kwargs: object) -> None:
-        return None
-
-    @staticmethod
-    def log_qualifying_diagnostics(*_args: object) -> None:
-        return None
-
-    @staticmethod
-    def filter_prop(rows: list[object], _symbols: set[str]) -> list[object]:
-        return rows
-
-
-class NoopSender:
-    async def send_if_not_empty(self, *_args: object, **_kwargs: object) -> bool:
-        raise AssertionError("empty legacy scan must not send Telegram")
-
-
-class NoopFormatter:
-    def format_message(self, *_args: object, **_kwargs: object) -> str:
-        raise AssertionError("empty legacy scan must not format a report")
+class NetworkForbiddenAPI:
+    def __getattr__(self, name: str) -> object:
+        raise AssertionError(f"TOP job attempted Binance access: {name}")
 
 
 class RecordingSender:
     def __init__(self) -> None:
-        self.targets: list[str] = []
+        self.calls: list[tuple[str, str, str, str]] = []
 
     async def send_if_not_empty(
-        self, _chat_id: str, _text: str, *, target_name: str, **_kwargs: object
+        self, chat_id: str, text: str, *, report_type: str, target_name: str
     ) -> bool:
-        self.targets.append(target_name)
-        return True
+        self.calls.append((chat_id, text, report_type, target_name))
+        return bool(text.strip())
 
 
-TEST_SETTINGS = SimpleNamespace(
-    impulse_threshold=5.0,
-    top_threshold=1.0,
-    show_top_when_empty=False,
-    top_when_empty_n=10,
-    send_empty_reports=False,
-    prop_symbols=set(),
-    debug_oi=False,
-)
+def make_runtime() -> RollingOIShadowRuntime:
+    return RollingOIShadowRuntime(
+        NetworkForbiddenAPI(),
+        lambda: (),
+        clock=lambda: NOW,
+        stream_factory=lambda _store: object(),
+    )
 
 
-class SchedulerEventLoopTests(IsolatedAsyncioTestCase):
-    def make_jobs(self, scanner: SlowLegacyScanner) -> SchedulerJobs:
+def add_window(
+    runtime: RollingOIShadowRuntime,
+    symbol: str,
+    change_pct: float,
+    *,
+    baseline_price: float | None = 100.0,
+    latest_price: float | None = 101.0,
+) -> None:
+    runtime.rolling_store.add(
+        RollingOISample(
+            symbol,
+            100.0,
+            NOW - timedelta(minutes=20),
+            NOW - timedelta(minutes=20),
+            mark_price=baseline_price,
+            price_exchange_time=(
+                NOW - timedelta(minutes=20)
+                if baseline_price is not None
+                else None
+            ),
+        )
+    )
+    runtime.rolling_store.add(
+        RollingOISample(
+            symbol,
+            100.0 + change_pct,
+            NOW,
+            NOW,
+            mark_price=latest_price,
+            price_exchange_time=NOW if latest_price is not None else None,
+        )
+    )
+
+
+def top_settings(*, send_empty: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(
+        top_threshold=1.0,
+        send_empty_reports=send_empty,
+        prop_symbols={"BOUNDARYUSDT"},
+        all_channel_id="all",
+        prop_channel_id="prop",
+    )
+
+
+class RollingTopProductionTests(IsolatedAsyncioTestCase):
+    def make_jobs(
+        self, runtime: RollingOIShadowRuntime, sender: RecordingSender
+    ) -> SchedulerJobs:
         return SchedulerJobs(
-            binance_api=FakeBinanceAPI(),  # type: ignore[arg-type]
-            telegram_sender=NoopSender(),  # type: ignore[arg-type]
-            oi_scanner=scanner,  # type: ignore[arg-type]
-            report_formatter=NoopFormatter(),  # type: ignore[arg-type]
+            binance_api=NetworkForbiddenAPI(),  # type: ignore[arg-type]
+            telegram_sender=sender,  # type: ignore[arg-type]
+            report_formatter=ReportFormatter(),
+            shadow_runtime=runtime,
         )
 
-    async def _assert_job_does_not_starve_async_heartbeat(self, job: object) -> None:
-        heartbeat_progressed = asyncio.Event()
+    async def test_quantity_threshold_sorting_price_and_all_prop_routing(self) -> None:
+        runtime = make_runtime()
+        add_window(runtime, "BOUNDARYUSDT", 1.0, latest_price=102.0)
+        add_window(runtime, "HIGHUSDT", 3.0, latest_price=99.0)
+        add_window(runtime, "LOWUSDT", 0.99)
+        sender = RecordingSender()
+        jobs = self.make_jobs(runtime, sender)
 
-        async def mark_price_heartbeat() -> None:
-            await asyncio.sleep(0.01)
-            heartbeat_progressed.set()
-
-        heartbeat = asyncio.create_task(mark_price_heartbeat())
-        legacy_job = asyncio.create_task(job())  # type: ignore[operator]
-        await asyncio.wait_for(heartbeat_progressed.wait(), timeout=0.05)
-        await heartbeat
-        await legacy_job
-
-    async def test_slow_top_scan_does_not_starve_mark_price_heartbeat(self) -> None:
-        scanner = SlowLegacyScanner()
-        jobs = self.make_jobs(scanner)
-        self.addAsyncCleanup(jobs.close)
-        main_thread = threading.get_ident()
-
-        with patch("oitgbot.scheduler_jobs.settings", TEST_SETTINGS):
-            await self._assert_job_does_not_starve_async_heartbeat(jobs.job_top)
-
-        self.assertEqual(1, len(scanner.thread_ids))
-        self.assertNotEqual(main_thread, scanner.thread_ids[0])
-
-    async def test_top_remains_publish_capable_with_single_outer_worker(self) -> None:
-        scanner = SlowLegacyScanner()
-        jobs = self.make_jobs(scanner)
-        self.addAsyncCleanup(jobs.close)
-
-        with patch("oitgbot.scheduler_jobs.settings", TEST_SETTINGS):
+        with patch("oitgbot.scheduler_jobs.settings", top_settings()):
             await jobs.job_top()
 
-        self.assertEqual(1, len(scanner.thread_ids))
-        self.assertEqual(1, scanner.peak_active)
+        self.assertEqual(["all", "prop"], [call[3] for call in sender.calls])
+        all_message = sender.calls[0][1]
+        self.assertLess(all_message.index("HIGHUSDT"), all_message.index("BOUNDARYUSDT"))
+        self.assertNotIn("LOWUSDT", all_message)
+        self.assertIn("+3.00 | -1.00 |", all_message)
+        self.assertIn("+1.00 | +2.00 |", all_message)
+        self.assertIn("BOUNDARYUSDT", sender.calls[1][1])
+        self.assertNotIn("HIGHUSDT", sender.calls[1][1])
 
-    async def test_top_still_publishes_to_all_and_prop(self) -> None:
-        class QualifyingTopScanner(SlowLegacyScanner):
-            def scan_oi_20m_all(self, _symbols: object) -> OIScanResult:
-                now = datetime.now(timezone.utc)
-                return OIScanResult("20m", [OIRow("BTCUSDT", 2.0)], 0, [], now, now, 1)
+    async def test_missing_price_keeps_valid_quantity_candidate(self) -> None:
+        runtime = make_runtime()
+        add_window(
+            runtime,
+            "NOPRICEUSDT",
+            2.0,
+            baseline_price=None,
+            latest_price=None,
+        )
+        sender = RecordingSender()
+        with patch("oitgbot.scheduler_jobs.settings", top_settings()):
+            await self.make_jobs(runtime, sender).job_top()
+        self.assertIn("+2.00 | NA |", sender.calls[0][1])
 
+    async def test_warmup_skips_without_network_or_fake_empty_report(self) -> None:
+        runtime = make_runtime()
+        runtime.rolling_store.add(
+            RollingOISample("BTCUSDT", 100.0, NOW, NOW)
+        )
+        sender = RecordingSender()
+        with (
+            patch("oitgbot.scheduler_jobs.settings", top_settings(send_empty=True)),
+            self.assertLogs("oitgbot.rolling.top", level="INFO") as captured,
+        ):
+            await self.make_jobs(runtime, sender).job_top()
+        self.assertEqual([], sender.calls)
+        self.assertIn("ROLLING_TOP_SKIP reason=warmup", "\n".join(captured.output))
+
+    async def test_send_empty_remains_compatible_after_warmup(self) -> None:
+        runtime = make_runtime()
+        add_window(runtime, "FLATUSDT", 0.5)
+        sender = RecordingSender()
+        with patch("oitgbot.scheduler_jobs.settings", top_settings(send_empty=True)):
+            await self.make_jobs(runtime, sender).job_top()
+        self.assertEqual(["all", "prop"], [call[3] for call in sender.calls])
+        self.assertTrue(all("(no growth) rolling OI_20m" in call[1] for call in sender.calls))
+
+    async def test_snapshot_calculation_runs_off_event_loop_without_network(self) -> None:
+        runtime = make_runtime()
+        add_window(runtime, "BTCUSDT", 2.0)
+        calling_thread = threading.get_ident()
+        snapshot_thread: list[int] = []
+        original = runtime.rolling_top_snapshot
+
+        def snapshot() -> object:
+            snapshot_thread.append(threading.get_ident())
+            return original()
+
+        runtime.rolling_top_snapshot = snapshot  # type: ignore[method-assign]
+        with patch("oitgbot.scheduler_jobs.settings", top_settings()):
+            await self.make_jobs(runtime, RecordingSender()).job_top()
+        self.assertNotEqual(calling_thread, snapshot_thread[0])
+
+    async def test_runtime_unavailable_cannot_fall_back_to_historical_top(self) -> None:
         sender = RecordingSender()
         jobs = SchedulerJobs(
-            binance_api=FakeBinanceAPI(),  # type: ignore[arg-type]
+            binance_api=NetworkForbiddenAPI(),  # type: ignore[arg-type]
             telegram_sender=sender,  # type: ignore[arg-type]
-            oi_scanner=QualifyingTopScanner(),  # type: ignore[arg-type]
             report_formatter=ReportFormatter(),
         )
-        self.addAsyncCleanup(jobs.close)
-        top_settings = SimpleNamespace(
-            **{**vars(TEST_SETTINGS), "prop_symbols": {"BTCUSDT"}, "all_channel_id": "all", "prop_channel_id": "prop"}
-        )
-        with patch("oitgbot.scheduler_jobs.settings", top_settings):
+        with patch("oitgbot.scheduler_jobs.settings", top_settings(send_empty=True)):
             await jobs.job_top()
-        self.assertEqual(["all", "prop"], sender.targets)
+        self.assertEqual([], sender.calls)
 
 
-class LegacyFormulaCompatibilityTests(TestCase):
-    def test_historical_oi_percentage_formula_is_unchanged(self) -> None:
-        self.assertEqual(5.0, OIScanner._pct(100.0, 105.0))
-        self.assertEqual(0.0, OIScanner._pct(0.0, 105.0))
+class ProductionArchitectureTests(TestCase):
+    def test_schedule_remains_00_20_40_at_second_10_and_only_top(self) -> None:
+        calls: list[tuple[object, object, dict[str, object]]] = []
+        scheduler = SimpleNamespace(
+            add_job=lambda function, trigger, **kwargs: calls.append(
+                (function, trigger, kwargs)
+            )
+        )
+        jobs = SimpleNamespace(job_top=object())
+        configure_scheduler(scheduler, jobs)  # type: ignore[arg-type]
+        self.assertEqual(1, len(calls))
+        self.assertEqual("top_20m", calls[0][2]["id"])
+        trigger_text = str(calls[0][1])
+        self.assertIn("minute='0,20,40'", trigger_text)
+        self.assertIn("second='10'", trigger_text)
+
+    def test_production_top_has_no_historical_or_current_oi_scan_wiring(self) -> None:
+        source = inspect.getsource(SchedulerJobs.job_top)
+        self.assertNotIn("scan_oi_20m", source)
+        self.assertNotIn("current_open_interest", source)
+        self.assertNotIn("price_change_20m", source)
+        self.assertNotIn("binance_api", source)
+        startup_source = inspect.getsource(main_async)
+        self.assertNotIn("OIScanner", startup_source)
+        self.assertNotIn("scan_oi_20m", startup_source)
+
+    def test_60m_and_120m_have_no_production_schedule(self) -> None:
+        source = inspect.getsource(configure_scheduler)
+        self.assertNotIn("60m", source)
+        self.assertNotIn("120m", source)
