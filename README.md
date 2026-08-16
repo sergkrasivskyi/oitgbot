@@ -54,8 +54,8 @@
 
 ```env
 BOT_TOKEN=your_telegram_bot_token
-ALL_CHANNEL_ID=-1001234567890
-PROP_CHANNEL_ID=-1001234567891
+ALL_CHANNEL_ID=<your_all_channel_id>
+PROP_CHANNEL_ID=<your_prop_channel_id>
 
 # Список "обраних" символів для другого каналу (опційно)
 PROP_SYMBOLS=BTCUSDT,ETHUSDT,SOLUSDT
