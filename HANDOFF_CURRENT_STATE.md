@@ -2,10 +2,14 @@
 
 ## Current state
 
-- Task 15: CODE PASS; production 5m IMPULSE rolling cutover complete.
-- Task 16: ongoing non-blocking live stabilization; field validation continues
-  during development.
-- Task 17: production 20m TOP cut over to rolling current OI quantity.
+- Task 15: CODE + LIVE PASS; production 5m IMPULSE rolling cutover complete.
+- Task 16: main stabilization checks passed; restart-state validation can
+  continue during the tablet field test.
+- Task 17: CODE + LIVE PASS; production 20m TOP cut over to rolling current OI
+  quantity.
+- Task 18: tablet field-test release prepared with the same Telegram
+  destinations, Ubuntu setup/check/run scripts, and ZIP export to Android
+  shared Downloads.
 
 ## Product architecture after Task 17
 
@@ -22,19 +26,9 @@ context. The production TOP job reads the in-memory RollingOIStore and adds no
 historical OI, current-OI, or kline request. After a cold restart, TOP warms
 naturally for approximately 20 minutes and has no historical fallback.
 
-## Near-term roadmap
+## Next phase
 
-- Task 17: rolling 20m TOP / accumulation production cutover.
-- Task 18: tablet test release.
-
-Task 18 will prepare a long-running field-test version containing production
-rolling 5m IMPULSE, production rolling 20m TOP, `bot.log`, `rolling_oi.log`,
-`rolling_oi_signal_state.json`, tablet deployment/runtime checks, and a simple
-log export utility. The planned `deploy/tablet/collect-logs.sh` should create a
-timestamped ZIP containing `bot.log`, `rolling_oi.log`, the signal-state JSON,
-and `runtime_info.txt`. Runtime metadata should include the git commit, branch,
-Python version, timezone/current time, and useful process/runtime information.
-
-The tablet release and export script are not part of Task 17. Decisions about
-Price Action + OI classification, 60m/120m accumulation, threshold tuning, and
-possible cadence optimization will follow several days of observed tablet data.
+Run several days of tablet live collection, then analyze real 5m quantity
+impulses, rolling 20m accumulation, OI + price relationships, threshold
+quality, future Price Action + OI regimes, and possible 60m/120m
+productization.

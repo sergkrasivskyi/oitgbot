@@ -171,14 +171,100 @@ Get-Content .\rolling_oi.log -Tail 0 -Wait |
 
 ### Near-term roadmap
 
-Task 18 is the tablet test release for the production rolling 5m/20m stack. It
-will add deployment/runtime checks and a planned
-`deploy/tablet/collect-logs.sh` utility that exports `bot.log`,
-`rolling_oi.log`, `rolling_oi_signal_state.json`, and runtime metadata into a
-timestamped ZIP. That deployment and export tooling is intentionally deferred
-from Task 17. Several days of tablet data will guide later price/OI
-classification, 60m/120m product decisions, threshold tuning, and any cadence
-optimization.
+The current tablet test release is for several days of live collection using
+the production rolling 5m/20m stack. It does not change its market logic.
+Observed data will later guide price/OI classification, 60m/120m product
+decisions, threshold quality, and any cadence optimization.
+
+## Tablet test release (Termux + proot Ubuntu)
+
+Runtime stack: Android -> Termux -> `proot-distro` Ubuntu -> this project ->
+`.venv` -> `run.py`. The tablet must use the same Telegram bot token and the
+same ALL and PROP destinations as the legacy tablet bot; do not create a test
+bot, test token, or separate channel.
+
+The tablet environment file lives outside Git, by default at
+`~/.config/oitgbot/env`. Create it with restrictive permissions where the
+environment supports them:
+
+```bash
+mkdir -p ~/.config/oitgbot
+chmod 700 ~/.config/oitgbot
+nano ~/.config/oitgbot/env
+chmod 600 ~/.config/oitgbot/env
+```
+
+Use the existing production values for `BOT_TOKEN`, `ALL_CHANNEL_ID`, and
+`PROP_CHANNEL_ID`. Set `TZ=Europe/Kyiv` there to retain the intended scheduler
+local-time behavior; rolling `observed_at_utc` semantics remain UTC. Do not put
+this file in the repository or upload it with diagnostics.
+
+Initial setup from Ubuntu (after cloning or updating this branch):
+
+```bash
+cd <project>
+bash deploy/tablet/setup-ubuntu.sh
+bash deploy/tablet/check-ubuntu.sh
+bash deploy/tablet/run-ubuntu.sh
+```
+
+`setup-ubuntu.sh` creates/reuses `.venv`, installs the project requirements,
+keeps existing state intact, and performs an import smoke check.
+`check-ubuntu.sh` is local and non-destructive: it verifies the venv, imports,
+required environment-variable presence (never their values), writable log/state
+parents, timezone, Android shared-storage availability, and Git identity. It
+does not contact Binance, send Telegram, or alter rolling signal state.
+`run-ubuntu.sh` is the sole tablet runtime command and starts the existing
+`run.py` entrypoint with console output visible and normal file logging active.
+It only supplies absent defaults: 30-second cadence, 20 workers, 5% 5m trigger,
+and 3% rearm.
+
+### Tablet cutover and warm-up
+
+1. Stop the old legacy bot manually; do not intentionally run both production
+   bots in parallel.
+2. Confirm it is gone, for example: `ps -ef | grep -E '[p]ython.*run.py'`.
+3. Update/deploy this rolling version, run the preflight check, then start it.
+4. Inspect `bot.log` and `rolling_oi.log` for startup and collector health.
+5. Allow natural warm-up before evaluating output: about 5 minutes for 5m
+   IMPULSE and about 20 minutes for 20m TOP. The collector itself starts
+   immediately.
+6. Verify the normal Telegram output in the existing ALL/PROP destinations.
+
+The rolling market-history store is deliberately not persisted or seeded from
+historical OI. The separate `rolling_oi_signal_state.json` is persistent and
+may suppress duplicate active 5m extremes across a restart for its configured
+15-minute TTL; normal setup and run never reset it.
+
+### Tablet logs and export
+
+Application logs remain in the project/runtime location, never continuously in
+Android shared storage. `bot.log` holds startup, scheduler, general application
+and Telegram events. `rolling_oi.log` holds the price stream, rate-limit budget,
+collector summaries, rolling analytics/signals, 20m TOP diagnostics, and signal
+state diagnostics. Each uses the existing rotating-file configuration: 5 MB per
+file with five retained backups by default.
+
+While the bot is still running, create an uploadable snapshot with:
+
+```bash
+cd <project>
+bash deploy/tablet/collect-logs.sh
+```
+
+It snapshots only active logs, their immediate `.1` rotations when present, and
+`rolling_oi_signal_state.json` into staging before creating
+`oi-bot-logs-YYYYMMDD-HHMMSS.zip`. The archive also has a no-secret
+`runtime_info.txt` with timestamp/timezone, Git identity/status, Python/runtime
+details, file sizes, state presence, process count, and disk space.
+
+The primary destination is `/sdcard/Download/OI-bot-logs`; the fallback is
+`/storage/emulated/0/Download/OI-bot-logs`. The script requires an existing
+writable Downloads parent and fails with a clear Termux shared-storage message
+if neither is available. It never moves, deletes, pauses, or resets live logs
+or state. Select the resulting ZIP from Android Downloads and upload it to
+ChatGPT for analysis. A Telegram `/logs` command is only a possible future
+convenience, not part of this release.
 
 ### Пояснення ключових параметрів
 
