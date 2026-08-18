@@ -61,15 +61,35 @@ class SchedulerJobs:
         calculation_started = time.perf_counter()
         try:
             runtime = self.shadow_runtime
-            snapshot_builder = getattr(runtime, "rolling_top_snapshot", None)
-            if snapshot_builder is None:
+            snapshot_reader = getattr(runtime, "completed_top_snapshot", None)
+            if snapshot_reader is None:
                 rolling_top_log.warning(
                     "ROLLING_TOP_SKIP reason=runtime_unavailable"
                 )
                 return
 
-            snapshot: Any = await asyncio.to_thread(snapshot_builder)
+            access: Any = await asyncio.to_thread(snapshot_reader)
             calculation_elapsed = time.perf_counter() - calculation_started
+            if access.status == "unavailable":
+                rolling_top_log.info(
+                    "ROLLING_TOP_SKIP reason=snapshot_unavailable"
+                )
+                return
+            if access.status == "stale":
+                rolling_top_log.warning(
+                    "ROLLING_TOP_SKIP reason=snapshot_stale snapshot_age_s=%.3f "
+                    "source_cycle_utc=%s",
+                    access.age_seconds,
+                    access.source_cycle_utc.isoformat(),
+                )
+                return
+            snapshot = access.snapshot
+            rolling_top_log.info(
+                "ROLLING_TOP_SNAPSHOT status=using snapshot_age_s=%.3f "
+                "source_cycle_utc=%s",
+                access.age_seconds,
+                snapshot.source_cycle_utc.isoformat(),
+            )
             if snapshot.ready_20m == 0:
                 rolling_top_log.info(
                     "ROLLING_TOP_SKIP reason=warmup report_utc=%s ready_20m=0 "

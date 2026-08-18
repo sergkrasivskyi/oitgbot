@@ -138,17 +138,25 @@ Binance Current OI REST (~30s)
            +-- Telegram --+
 ```
 
-The production 20m TOP is an in-memory rolling quantity ranking. It includes
-symbols at `TOP_THRESHOLD` (+1% by default), sorts them descending, and retains
-ALL/PROP delivery. Its PX% value comes from existing rolling price context and
-renders as `NA` when unavailable; price never gates an OI candidate. A cold
-restart requires a natural approximately 20-minute warm-up. During warm-up the
-scheduled report is skipped without a historical fallback or fake empty report.
+The production 20m TOP is an in-memory rolling quantity ranking. After each
+fully successful collector cycle, the rolling runtime atomically publishes an
+immutable completed-cycle TOP snapshot. The scheduled TOP job reads only that
+cached snapshot, so a collector cycle still in progress cannot expose a partial
+universe. Partial, failed, skipped, or timed-out cycles retain the previous good
+snapshot. Missing and stale snapshots are skipped safely using the existing
+rolling observation freshness limit.
+
+TOP includes symbols at `TOP_THRESHOLD` (+1% by default), sorts them descending,
+and retains ALL/PROP delivery. Its PX% value comes from existing rolling price
+context and renders as `NA` when unavailable; price never gates an OI candidate.
+A cold restart requires a natural approximately 20-minute warm-up. During
+warm-up the scheduled report is skipped without a historical fallback or fake
+empty report.
 
 No production 5m or 20m report uses historical `openInterestHist`. The normal
-TOP job also makes no current-OI or kline request; it consumes samples already
-collected at the unchanged 30-second cadence. Rolling 60m and 120m analytics
-remain observational only.
+TOP job also makes no current-OI or kline request; it consumes the latest fresh
+completed collector snapshot produced at the unchanged 30-second cadence.
+Rolling 60m and 120m analytics remain observational only.
 Docker Compose persists the signal-state JSON under the host `state` directory.
 
 ### Log files
@@ -166,15 +174,35 @@ Get-Content .\rolling_oi.log -Tail 0 -Wait |
     Select-String -Pattern 'ROLLING_SIGNAL|ROLLING_SIGNAL_PUBLISH'
 
 Get-Content .\rolling_oi.log -Tail 0 -Wait |
-    Select-String -Pattern 'ROLLING_TOP_SUMMARY|ROLLING_TOP_PUBLISH|ROLLING_TOP_SKIP'
+    Select-String -Pattern 'ROLLING_TOP_SNAPSHOT|ROLLING_TOP_SUMMARY|ROLLING_TOP_PUBLISH|ROLLING_TOP_SKIP'
 ```
 
 ### Near-term roadmap
 
-The current tablet test release is for several days of live collection using
-the production rolling 5m/20m stack. It does not change its market logic.
-Observed data will later guide price/OI classification, 60m/120m product
-decisions, threshold quality, and any cadence optimization.
+Task 20 implements completed collector snapshots for production 20m TOP. The
+following items are planned and are not yet implemented:
+
+1. **Task 21 — Long-term research telemetry for OI + Price:** support
+   1h/2h/6h/12h/24h/48h/72h analysis and multi-day retention.
+2. **Task 22 — Grid Candidate research:** study smooth OI build-up, then price
+   weakness, then price stabilization while OI remains elevated. This is not
+   simply an `OI up + Price down` rule.
+3. **Task 23 — Impulse -> Pullback -> Continuation research:** capture positive
+   OI+price impulse, pullback depth, OI behavior during pullback, high reclaim,
+   and subsequent outcomes. Telemetry must retain the absolute price path,
+   highs, and lows so these outcomes can be measured statistically.
+4. **Task 24 — Telegram report UX system:** add explicit type and horizon
+   headings.
+5. **Task 25 — 60m/120m accumulation product decision:** decide from collected
+   evidence whether to productize these horizons.
+6. **Task 26 — Statistical production tuning:** evaluate 5m/20m thresholds and
+   whether negative OI impulses belong in production.
+7. **Task 27 — Remaining operational hardening:** env/CRLF resilience,
+   restart-state field validation, diagnostics, tablet Git workflow,
+   Termux:Boot/autostart, and one-instance health.
+
+Production 5m/20m thresholds remain unchanged until the research telemetry
+provides sufficient evidence.
 
 ## Tablet test release (Termux + proot Ubuntu)
 

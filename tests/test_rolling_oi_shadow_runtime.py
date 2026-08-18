@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase, TestCase
@@ -421,6 +422,77 @@ class ShadowRuntimeEvaluationTests(TestCase):
         self.assertEqual((1, 1, 1, 1), (
             warm.ready_5m, warm.ready_20m, warm.ready_60m, warm.ready_120m
         ))
+
+    def test_completed_snapshot_lifecycle_and_immutability(self) -> None:
+        runtime = self.make_runtime()
+        self.assertEqual("unavailable", runtime.completed_top_snapshot().status)
+
+        self.add_history(runtime, lambda minute: 100 + minute)
+        first_cycle = cycle_result()
+        runtime._refresh_completed_top_snapshot(first_cycle, ("BTCUSDT",))
+        first_access = runtime.completed_top_snapshot()
+
+        self.assertEqual("ready", first_access.status)
+        self.assertIsNotNone(first_access.snapshot)
+        assert first_access.snapshot is not None
+        self.assertEqual(1, first_access.snapshot.ready_20m)
+        with self.assertRaises(FrozenInstanceError):
+            first_access.snapshot.symbol_count = 2  # type: ignore[misc]
+
+        later = NOW + timedelta(seconds=30)
+        runtime.rolling_store.add(
+            RollingOISample("BTCUSDT", 250.0, later, later)
+        )
+        runtime._clock = lambda: later
+        second_cycle = replace(
+            first_cycle,
+            cycle_started_at_utc=later - timedelta(seconds=1),
+            cycle_finished_at_utc=later,
+        )
+        runtime._refresh_completed_top_snapshot(second_cycle, ("BTCUSDT",))
+        second_access = runtime.completed_top_snapshot()
+
+        self.assertEqual("ready", second_access.status)
+        self.assertIsNot(first_access.snapshot, second_access.snapshot)
+        self.assertEqual(later, second_access.source_cycle_utc)
+
+    def test_incomplete_cycles_retain_previous_completed_snapshot(self) -> None:
+        runtime = self.make_runtime()
+        self.add_history(runtime, lambda minute: 100 + minute)
+        good_cycle = cycle_result()
+        runtime._refresh_completed_top_snapshot(good_cycle, ("BTCUSDT",))
+        good_snapshot = runtime.completed_top_snapshot().snapshot
+
+        incomplete_cycles = (
+            replace(good_cycle, failed_symbols=1, successful_samples=0),
+            replace(
+                good_cycle,
+                cycle_timed_out=True,
+                timed_out_symbols=1,
+                successful_samples=0,
+            ),
+            replace(
+                good_cycle,
+                cycle_skipped=True,
+                skip_reason="rate_budget",
+                successful_samples=0,
+            ),
+            replace(good_cycle, successful_samples=0),
+            replace(
+                good_cycle,
+                symbols_requested=2,
+                successful_samples=2,
+                oi_requests_attempted=2,
+            ),
+        )
+        for incomplete in incomplete_cycles:
+            with self.subTest(cycle=incomplete):
+                runtime._refresh_completed_top_snapshot(
+                    incomplete, ("BTCUSDT",)
+                )
+                self.assertIs(
+                    good_snapshot, runtime.completed_top_snapshot().snapshot
+                )
 
     def test_smooth_and_impulse_growth_both_expose_quality_metrics(self) -> None:
         for name, quantity_at in (

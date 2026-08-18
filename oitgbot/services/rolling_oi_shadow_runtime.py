@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import math
+import threading
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -87,11 +88,20 @@ class RollingShadowHealth:
 @dataclass(frozen=True, slots=True)
 class RollingTopSnapshot:
     report_utc: datetime
+    source_cycle_utc: datetime
     symbol_count: int
     ready_20m: int
     price_ready_20m: int
     quantity_sample_coverage: float
     results: tuple[RollingOIWindowResult, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RollingTopSnapshotAccess:
+    status: str
+    snapshot: RollingTopSnapshot | None
+    age_seconds: float | None
+    source_cycle_utc: datetime | None
 
 
 class RollingOIShadowRuntime:
@@ -197,6 +207,8 @@ class RollingOIShadowRuntime:
         self._last_evaluation: RollingShadowEvaluation | None = None
         self._last_signal_events: tuple[RollingOISignalEvent, ...] = ()
         self._signal_state_changed = False
+        self._completed_top_snapshot: RollingTopSnapshot | None = None
+        self._completed_top_snapshot_lock = threading.Lock()
 
     async def start(self) -> None:
         if self._started:
@@ -344,6 +356,7 @@ class RollingOIShadowRuntime:
                 log_candidates=result.samples_inserted > 0,
                 eligible_symbols=symbols,
             )
+            self._refresh_completed_top_snapshot(result, symbols)
             if self._signal_state_changed:
                 await self._persist_signal_state(result.cycle_finished_at_utc)
             self._schedule_trigger_publications(self._last_signal_events)
@@ -364,6 +377,103 @@ class RollingOIShadowRuntime:
         if result.failed_symbols:
             return "partial_failure"
         return "ok"
+
+    @staticmethod
+    def _completed_cycle_rejection_reason(
+        result: CurrentOICycleResult, eligible_symbol_count: int
+    ) -> str | None:
+        if result.cycle_skipped:
+            return f"skipped:{result.skip_reason or 'unknown'}"
+        if result.cycle_timed_out or result.timed_out_symbols:
+            return "timed_out"
+        if result.failed_symbols:
+            return "failed_symbols"
+        if result.symbols_requested != eligible_symbol_count:
+            return "eligible_universe_mismatch"
+        if result.successful_samples != result.symbols_requested:
+            return "incomplete_coverage"
+        if result.symbols_requested == 0:
+            return "empty_universe"
+        return None
+
+    def _refresh_completed_top_snapshot(
+        self,
+        cycle: CurrentOICycleResult,
+        eligible_symbols: Sequence[str],
+    ) -> None:
+        rejection_reason = self._completed_cycle_rejection_reason(
+            cycle, len(eligible_symbols)
+        )
+        if rejection_reason is not None:
+            with self._completed_top_snapshot_lock:
+                retained = self._completed_top_snapshot
+            logger.info(
+                "ROLLING_TOP_SNAPSHOT status=retained reason=%s cycle_utc=%s "
+                "successful=%d requested=%d eligible=%d retained_source_cycle_utc=%s",
+                rejection_reason,
+                cycle.cycle_finished_at_utc.isoformat(),
+                cycle.successful_samples,
+                cycle.symbols_requested,
+                len(eligible_symbols),
+                retained.source_cycle_utc.isoformat() if retained else "NA",
+            )
+            return
+
+        try:
+            snapshot = self._build_completed_top_snapshot(cycle, eligible_symbols)
+        except Exception:
+            logger.exception(
+                "ROLLING_TOP_SNAPSHOT status=retained reason=build_failed cycle_utc=%s",
+                cycle.cycle_finished_at_utc.isoformat(),
+            )
+            return
+
+        with self._completed_top_snapshot_lock:
+            self._completed_top_snapshot = snapshot
+        logger.info(
+            "ROLLING_TOP_SNAPSHOT status=refreshed source_cycle_utc=%s symbols=%d "
+            "ready_20m=%d quantity_coverage=%.3f",
+            snapshot.source_cycle_utc.isoformat(),
+            snapshot.symbol_count,
+            snapshot.ready_20m,
+            snapshot.quantity_sample_coverage,
+        )
+
+    def _build_completed_top_snapshot(
+        self,
+        cycle: CurrentOICycleResult,
+        eligible_symbols: Sequence[str],
+    ) -> RollingTopSnapshot:
+        results: list[RollingOIWindowResult] = []
+        for symbol in eligible_symbols:
+            latest = self.rolling_store.latest(symbol)
+            if latest is None:
+                continue
+            latest_age = (
+                cycle.cycle_finished_at_utc - latest.observed_at_utc
+            ).total_seconds()
+            if latest_age < 0 or latest_age > self.observation_max_age_seconds:
+                continue
+            result = self.calculator.calculate_20m(self.rolling_store, symbol)
+            if result.available and result.oi_quantity_change_pct is not None:
+                results.append(result)
+        results.sort(
+            key=lambda item: item.oi_quantity_change_pct or 0.0,
+            reverse=True,
+        )
+        return RollingTopSnapshot(
+            report_utc=cycle.cycle_finished_at_utc,
+            source_cycle_utc=cycle.cycle_finished_at_utc,
+            symbol_count=len(eligible_symbols),
+            ready_20m=len(results),
+            price_ready_20m=sum(
+                result.price_change_pct is not None for result in results
+            ),
+            quantity_sample_coverage=(
+                cycle.successful_samples / cycle.symbols_requested
+            ),
+            results=tuple(results),
+        )
 
     def evaluate_and_log(
         self,
@@ -690,47 +800,21 @@ class RollingOIShadowRuntime:
                 _pct(metrics.max_5m_change_pct),
             )
 
-    def rolling_top_snapshot(self) -> RollingTopSnapshot:
-        """Build a network-free 20m snapshot from already collected samples."""
-        report_utc = self._clock()
-        symbols = self.rolling_store.symbols()
-        results: list[RollingOIWindowResult] = []
-        for symbol in symbols:
-            latest = self.rolling_store.latest(symbol)
-            if latest is None:
-                continue
-            latest_age = (report_utc - latest.observed_at_utc).total_seconds()
-            if latest_age < 0 or latest_age > self.observation_max_age_seconds:
-                continue
-            try:
-                result = self.calculator.calculate_20m(
-                    self.rolling_store, symbol
-                )
-            except Exception:
-                logger.exception(
-                    "ROLLING_TOP_SYMBOL_ERROR symbol=%s", symbol
-                )
-                continue
-            if result.available and result.oi_quantity_change_pct is not None:
-                results.append(result)
-        results.sort(
-            key=lambda item: item.oi_quantity_change_pct or 0.0,
-            reverse=True,
-        )
-        quantity_coverage = (
-            self._last_evaluation.quantity_sample_coverage
-            if self._last_evaluation is not None
-            else 0.0
-        )
-        return RollingTopSnapshot(
-            report_utc=report_utc,
-            symbol_count=len(symbols),
-            ready_20m=len(results),
-            price_ready_20m=sum(
-                result.price_change_pct is not None for result in results
-            ),
-            quantity_sample_coverage=quantity_coverage,
-            results=tuple(results),
+    def completed_top_snapshot(self) -> RollingTopSnapshotAccess:
+        """Return the latest completed-cycle TOP snapshot without reading the store."""
+        now = self._clock()
+        with self._completed_top_snapshot_lock:
+            snapshot = self._completed_top_snapshot
+        if snapshot is None:
+            return RollingTopSnapshotAccess("unavailable", None, None, None)
+
+        age_seconds = (now - snapshot.source_cycle_utc).total_seconds()
+        if age_seconds < 0 or age_seconds > self.observation_max_age_seconds:
+            return RollingTopSnapshotAccess(
+                "stale", None, age_seconds, snapshot.source_cycle_utc
+            )
+        return RollingTopSnapshotAccess(
+            "ready", snapshot, age_seconds, snapshot.source_cycle_utc
         )
 
     def health(self) -> RollingShadowHealth:
