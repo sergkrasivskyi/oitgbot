@@ -225,6 +225,23 @@ class PriceStateStoreTests(TestCase):
         self.assertTrue(store.update(price_update("SOLUSDT")))
 
 
+class PriceObserverIsolationTests(TestCase):
+    def test_observer_failure_is_logged_and_observer_is_disabled(self) -> None:
+        calls = 0
+
+        def fail(_update: MarkPriceUpdate) -> None:
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("synthetic observer failure")
+
+        stream = MarkPriceStream(PriceStateStore(), observer=fail)
+        with self.assertLogs("oitgbot.rolling.price_stream", level="ERROR"):
+            stream._notify_observer(price_update())
+        stream._notify_observer(price_update())
+
+        self.assertEqual(1, calls)
+
+
 class FakeWebSocket:
     def __init__(self, *messages: str | Exception) -> None:
         self.messages: asyncio.Queue[str | Exception] = asyncio.Queue()

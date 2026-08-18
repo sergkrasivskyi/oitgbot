@@ -116,6 +116,7 @@ class MarkPriceStream:
         clock: Callable[[], datetime] = _utc_now,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         random_value: Callable[[], float] = random.random,
+        observer: Callable[[MarkPriceUpdate], None] | None = None,
     ) -> None:
         if stale_after_seconds <= 0 or not math.isfinite(stale_after_seconds):
             raise ValueError("stale_after_seconds must be finite and positive")
@@ -130,6 +131,7 @@ class MarkPriceStream:
         self._clock = clock
         self._sleep = sleep
         self._random_value = random_value
+        self._observer = observer
         self._stop_event = asyncio.Event()
         self._active_socket: Any = None
         self._state_lock = threading.RLock()
@@ -138,6 +140,11 @@ class MarkPriceStream:
         self._last_valid_update_at: datetime | None = None
         self._reconnect_count = 0
         self._last_error: str | None = None
+
+    def set_observer(
+        self, observer: Callable[[MarkPriceUpdate], None] | None
+    ) -> None:
+        self._observer = observer
 
     async def run(self) -> None:
         failure_streak = 0
@@ -258,6 +265,7 @@ class MarkPriceStream:
 
             for update in result.updates:
                 self.store.update(update)
+                self._notify_observer(update)
             if result.updates:
                 with self._state_lock:
                     self._last_valid_update_at = received_at
@@ -267,6 +275,18 @@ class MarkPriceStream:
                     result.malformed_entries,
                     len(result.updates),
                 )
+
+    def _notify_observer(self, update: MarkPriceUpdate) -> None:
+        observer = self._observer
+        if observer is None:
+            return
+        try:
+            observer(update)
+        except Exception:
+            self._observer = None
+            logger.exception(
+                "PRICE_STREAM_OBSERVER status=disabled reason=observer_failed"
+            )
 
     async def _sleep_or_stop(self, delay: float) -> None:
         sleep_task = asyncio.create_task(self._sleep(delay))

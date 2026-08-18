@@ -56,6 +56,7 @@
 BOT_TOKEN=your_telegram_bot_token
 ALL_CHANNEL_ID=<your_all_channel_id>
 PROP_CHANNEL_ID=<your_prop_channel_id>
+TELEGRAM_PUBLISH_ENABLED=1
 
 # Список "обраних" символів для другого каналу (опційно)
 PROP_SYMBOLS=BTCUSDT,ETHUSDT,SOLUSDT
@@ -97,6 +98,11 @@ ROLLING_OI_SIGNAL_STATE_TTL_MINUTES=15
 ROLLING_OI_20M_OBSERVATION_PCT=1
 ROLLING_OI_60M_OBSERVATION_PCT=3
 ROLLING_OI_120M_OBSERVATION_PCT=4
+
+# Durable LONG research layer (enabled by default)
+RESEARCH_TELEMETRY_ENABLED=1
+RESEARCH_TELEMETRY_DB_PATH=state/oi_research.sqlite3
+RESEARCH_TELEMETRY_RETENTION_DAYS=14
 ````
 
 `ROLLING_OI_OBSERVATION_MAX_AGE_SECONDS` controls freshness of the bot's local
@@ -120,6 +126,84 @@ the same continuous extreme. Restored state expires after
 rolling observation confirms it. Missing, corrupt, incompatible, or stale state
 starts safely. The rolling data window itself is never seeded from historical OI
 and still warms naturally.
+
+### FAST production vs LONG research data
+
+The production and research paths are deliberately independent:
+
+```text
+FAST: 30s RollingOIStore -> 5m IMPULSE / 20m completed TOP / 60m+120m shadow
+LONG: UTC 5m research bars -> SQLite -> offline 1h/2h/6h/12h/24h/48h/72h research
+```
+
+The LONG layer is enabled by default and writes to
+`state/oi_research.sqlite3`, with WAL mode, a single background writer, and
+14-day retention. Disable it with `RESEARCH_TELEMETRY_ENABLED=0`. Telemetry
+startup/write/observer failures are isolated and never stop or suppress the
+collector, price stream, production signals, TOP snapshots, or Telegram.
+
+Each logical `symbol + bucket_start_utc` row represents a fixed, UTC-aligned
+five-minute bucket. OI open/high/low/close, count, and first/last observation
+timestamps come only from valid current-OI samples accepted by
+`RollingOIStore`. Price open/high/low/close, count, and first/last event
+timestamps come from every validated event on the existing all-market ~1s
+mark-price WebSocket, preserving intrabucket price highs/lows without another
+connection. Rows also carry `is_closed`; normal reads and exports include only
+closed buckets. A graceful shutdown may store the current bucket as an explicit
+partial row, which is safely merged if collection resumes in that bucket.
+
+The versioned SQLite table is `research_bars_5m`. Its persisted research fields
+are `symbol`, `bucket_start_utc`, `oi_open`, `oi_high`, `oi_low`, `oi_close`,
+`oi_sample_count`, `first_oi_observed_at_utc`, `last_oi_observed_at_utc`,
+`price_open`, `price_high`, `price_low`, `price_close`, `price_sample_count`,
+`first_price_event_at_utc`, `last_price_event_at_utc`, and `is_closed` (plus an
+internal update timestamp). No historical Binance backfill is performed.
+
+Export a recent closed-bar range without copying the database:
+
+```bash
+python -m tools.research_telemetry_export --hours 96 --output research-96h.csv.gz
+```
+
+Use repeated `--symbol BTCUSDT` options for optional filtering. The command is
+read-only and reports row count, first/last bucket, and output path.
+
+### Local live soak (development laptop)
+
+For a real-data development soak, use a separate research database; never mix
+it with the production database.
+The normal bot still uses public Binance REST and the existing all-market
+mark-price WebSocket, with unchanged production logic.
+
+Set these existing environment values in the laptop test environment:
+
+```env
+TELEGRAM_PUBLISH_ENABLED=0
+RESEARCH_TELEMETRY_ENABLED=1
+RESEARCH_TELEMETRY_DB_PATH=state/oi_research_test.sqlite3
+RESEARCH_TELEMETRY_RETENTION_DAYS=14
+```
+
+Production thresholds remain unchanged. Signals and reports are still calculated
+and logged, but nothing is sent to Telegram; research SQLite continues
+accumulating real Binance data.
+
+Then run the normal bot, wait at least 15-30 minutes, inspect it, and leave it
+running for several hours if practical:
+
+```powershell
+python run.py
+
+python -m tools.research_telemetry_status --db state/oi_research_test.sqlite3
+
+python -m tools.research_telemetry_export --db state/oi_research_test.sqlite3 --hours 4 --output research-test.csv.gz
+```
+
+The status command is read-only: it makes no Binance or Telegram request. It
+reports database/schema details; closed and partial bar counts; OI/price sample
+quality; OI-only and price-only rows; integrity checks; and latest-closed-bucket
+coverage/sample counts. Re-run it during the soak to compare the newest closed
+bucket rather than relying only on historical totals.
 
 ```text
 Binance Current OI REST (~30s)
@@ -179,25 +263,24 @@ Get-Content .\rolling_oi.log -Tail 0 -Wait |
 
 ### Near-term roadmap
 
-Task 20 implements completed collector snapshots for production 20m TOP. The
-following items are planned and are not yet implemented:
+Tasks 20 and 21 are implemented: production TOP uses completed collector
+snapshots, and durable OI + Price research telemetry supplies multi-day 5m
+source bars. The following items remain planned and are not yet implemented:
 
-1. **Task 21 — Long-term research telemetry for OI + Price:** support
-   1h/2h/6h/12h/24h/48h/72h analysis and multi-day retention.
-2. **Task 22 — Grid Candidate research:** study smooth OI build-up, then price
+1. **Task 22 — Grid Candidate research:** study smooth OI build-up, then price
    weakness, then price stabilization while OI remains elevated. This is not
    simply an `OI up + Price down` rule.
-3. **Task 23 — Impulse -> Pullback -> Continuation research:** capture positive
+2. **Task 23 — Impulse -> Pullback -> Continuation research:** capture positive
    OI+price impulse, pullback depth, OI behavior during pullback, high reclaim,
    and subsequent outcomes. Telemetry must retain the absolute price path,
    highs, and lows so these outcomes can be measured statistically.
-4. **Task 24 — Telegram report UX system:** add explicit type and horizon
+3. **Task 24 — Telegram report UX system:** add explicit type and horizon
    headings.
-5. **Task 25 — 60m/120m accumulation product decision:** decide from collected
+4. **Task 25 — 60m/120m accumulation product decision:** decide from collected
    evidence whether to productize these horizons.
-6. **Task 26 — Statistical production tuning:** evaluate 5m/20m thresholds and
+5. **Task 26 — Statistical production tuning:** evaluate 5m/20m thresholds and
    whether negative OI impulses belong in production.
-7. **Task 27 — Remaining operational hardening:** env/CRLF resilience,
+6. **Task 27 — Remaining operational hardening:** env/CRLF resilience,
    restart-state field validation, diagnostics, tablet Git workflow,
    Termux:Boot/autostart, and one-instance health.
 
@@ -280,11 +363,13 @@ cd <project>
 bash deploy/tablet/collect-logs.sh
 ```
 
-It snapshots only active logs, their immediate `.1` rotations when present, and
-`rolling_oi_signal_state.json` into staging before creating
+It snapshots only active `bot.log`/`rolling_oi.log` files, every existing
+rotation of both logs, and `rolling_oi_signal_state.json` into staging before creating
 `oi-bot-logs-YYYYMMDD-HHMMSS.zip`. The archive also has a no-secret
 `runtime_info.txt` with timestamp/timezone, Git identity/status, Python/runtime
 details, file sizes, state presence, process count, and disk space.
+The research SQLite database and its WAL/SHM files are deliberately excluded;
+use the research telemetry export command when research data is needed.
 
 The primary destination is `/sdcard/Download/OI-bot-logs`; the fallback is
 `/storage/emulated/0/Download/OI-bot-logs`. The script requires an existing

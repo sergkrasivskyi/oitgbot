@@ -13,8 +13,11 @@ log = logging.getLogger("oi_publisher")
 
 
 class TelegramSender:
-    def __init__(self, app: Application) -> None:
+    def __init__(
+        self, app: Application | None, *, publish_enabled: bool = True
+    ) -> None:
         self.app = app
+        self.publish_enabled = publish_enabled
 
     @staticmethod
     def _log_timing(
@@ -46,12 +49,24 @@ class TelegramSender:
         target_name: str = "unknown",
     ) -> bool:
         started_utc = utc_now()
+        if not self.publish_enabled:
+            log.info(
+                "TELEGRAM_PUBLISH_SUPPRESSED report=%s target=%s nonempty=%s",
+                report_type,
+                target_name,
+                bool(text.strip()),
+            )
+            self._log_timing(report_type, target_name, started_utc, False, "suppressed")
+            return False
         if not text.strip():
-            self._log_timing(report_type, target_name, started_utc, False, "not_attempted_empty")
+            self._log_timing(
+                report_type, target_name, started_utc, False, "not_attempted_empty"
+            )
             return False
 
         for attempt in range(2):  # 1 основна спроба + 1 повтор
             try:
+                assert self.app is not None
                 await self.app.bot.send_message(
                     chat_id=chat_id,
                     text=text,
@@ -82,17 +97,25 @@ class TelegramSender:
                     chat_id,
                     exc,
                 )
-                self._log_timing(report_type, target_name, started_utc, False, "retry_failed")
+                self._log_timing(
+                    report_type, target_name, started_utc, False, "retry_failed"
+                )
                 return False
 
             except TelegramError as exc:
                 log.error("Telegram send failed: chat_id=%s error=%s", chat_id, exc)
-                self._log_timing(report_type, target_name, started_utc, False, "not_retried")
+                self._log_timing(
+                    report_type, target_name, started_utc, False, "not_retried"
+                )
                 return False
 
             except Exception as exc:
-                log.error("Unexpected Telegram send error: chat_id=%s error=%s", chat_id, exc)
-                self._log_timing(report_type, target_name, started_utc, False, "not_retried")
+                log.error(
+                    "Unexpected Telegram send error: chat_id=%s error=%s", chat_id, exc
+                )
+                self._log_timing(
+                    report_type, target_name, started_utc, False, "not_retried"
+                )
                 return False
 
         self._log_timing(report_type, target_name, started_utc, False, "exhausted")

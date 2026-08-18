@@ -121,6 +121,7 @@ class CurrentOICollector:
         max_price_observation_skew_seconds: float = 5.0,
         transaction_age_warning_seconds: float = 60.0,
         future_oi_tolerance_seconds: float = 5.0,
+        observation_sink: Callable[[RollingOISample], None] | None = None,
         clock: Callable[[], datetime] = _utc_now,
         monotonic: Callable[[], float] = time.perf_counter,
     ) -> None:
@@ -173,6 +174,7 @@ class CurrentOICollector:
         self.future_oi_tolerance_seconds = float(
             future_oi_tolerance_seconds
         )
+        self._observation_sink = observation_sink
         self._clock = clock
         self._monotonic = monotonic
         self._executor = ThreadPoolExecutor(
@@ -510,6 +512,15 @@ class CurrentOICollector:
             stats.successful_samples += 1
             if self.rolling_store.add(sample):
                 stats.samples_inserted += 1
+                sink = self._observation_sink
+                if sink is not None:
+                    try:
+                        sink(sample)
+                    except Exception:
+                        self._observation_sink = None
+                        logger.exception(
+                            "OI_COLLECTOR_OBSERVER status=disabled reason=observer_failed"
+                        )
             else:
                 stats.samples_ignored += 1
         except (TypeError, ValueError, OverflowError):

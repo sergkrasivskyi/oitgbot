@@ -19,7 +19,11 @@ class TabletLogExportTests(unittest.TestCase):
         self.project.mkdir()
         (self.project / "bot.log").write_text("bot snapshot", encoding="utf-8")
         (self.project / "bot.log.1").write_text("bot rotation", encoding="utf-8")
+        (self.project / "bot.log.7").write_text("older bot rotation", encoding="utf-8")
         (self.project / "rolling_oi.log").write_text("rolling snapshot", encoding="utf-8")
+        (self.project / "rolling_oi.log.2").write_text("rolling rotation", encoding="utf-8")
+        (self.project / "state").mkdir()
+        (self.project / "state" / "oi_research.sqlite3").write_bytes(b"not exported")
         (self.project / "rolling_oi_signal_state.json").write_text("{}", encoding="utf-8")
         (self.project / ".env").write_text("BOT_TOKEN=never-export", encoding="utf-8")
         (self.project / ".git").mkdir()
@@ -31,7 +35,14 @@ class TabletLogExportTests(unittest.TestCase):
     def test_selects_only_expected_diagnostics(self) -> None:
         self.assertEqual(
             [path.name for path in log_export.selected_files(self.project)],
-            ["bot.log", "bot.log.1", "rolling_oi.log", "rolling_oi_signal_state.json"],
+            [
+                "bot.log",
+                "bot.log.1",
+                "bot.log.7",
+                "rolling_oi.log",
+                "rolling_oi.log.2",
+                "rolling_oi_signal_state.json",
+            ],
         )
 
     def test_archive_is_timestamped_and_copies_live_files(self) -> None:
@@ -42,9 +53,18 @@ class TabletLogExportTests(unittest.TestCase):
         with zipfile.ZipFile(archive) as zip_file:
             self.assertEqual(
                 sorted(zip_file.namelist()),
-                ["bot.log", "bot.log.1", "rolling_oi.log", "rolling_oi_signal_state.json", "runtime_info.txt"],
+                [
+                    "bot.log",
+                    "bot.log.1",
+                    "bot.log.7",
+                    "rolling_oi.log",
+                    "rolling_oi.log.2",
+                    "rolling_oi_signal_state.json",
+                    "runtime_info.txt",
+                ],
             )
             self.assertNotIn(".env", zip_file.namelist())
+            self.assertNotIn("oi_research.sqlite3", zip_file.namelist())
             self.assertNotIn("never-export", zip_file.read("runtime_info.txt").decode())
 
     def test_missing_optional_state_file_does_not_block_export(self) -> None:

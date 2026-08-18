@@ -144,6 +144,9 @@ class ShadowConfigTests(TestCase):
         self.assertEqual(5, value.rolling_oi_5m_trigger_pct)
         self.assertEqual(3, value.rolling_oi_5m_rearm_pct)
         self.assertEqual(15, value.rolling_oi_signal_state_ttl_minutes)
+        self.assertTrue(value.research_telemetry_enabled)
+        self.assertEqual("state/oi_research.sqlite3", value.research_telemetry_db_path)
+        self.assertEqual(14, value.research_telemetry_retention_days)
 
     def test_invalid_enabled_shadow_config_fails_clearly(self) -> None:
         value = Settings(
@@ -178,6 +181,32 @@ class ShadowConfigTests(TestCase):
 
         self.assertIsNone(result)
         runtime_type.assert_not_called()
+
+    def test_invalid_research_telemetry_config_fails_clearly(self) -> None:
+        value = Settings(
+            bot_token="x",
+            all_channel_id="a",
+            prop_channel_id="p",
+            research_telemetry_retention_days=0,
+        )
+        with self.assertRaisesRegex(RuntimeError, "RESEARCH_TELEMETRY_RETENTION_DAYS"):
+            value.validate()
+
+    def test_app_wires_default_research_telemetry_settings(self) -> None:
+        configured = Settings(
+            bot_token="x", all_channel_id="a", prop_channel_id="p"
+        )
+        jobs = SimpleNamespace(get_symbols_cached=lambda: ["BTCUSDT"])
+        with (
+            patch("oitgbot.app.settings", configured),
+            patch("oitgbot.app.RollingOIShadowRuntime") as runtime_type,
+        ):
+            build_shadow_runtime(object(), jobs)  # type: ignore[arg-type]
+
+        kwargs = runtime_type.call_args.kwargs
+        self.assertTrue(kwargs["research_telemetry_enabled"])
+        self.assertEqual("state/oi_research.sqlite3", kwargs["research_db_path"])
+        self.assertEqual(14, kwargs["research_retention_days"])
 
 
 class ShadowRuntimeLifecycleTests(IsolatedAsyncioTestCase):
@@ -326,6 +355,45 @@ class ShadowRuntimeLifecycleTests(IsolatedAsyncioTestCase):
         await asyncio.wait_for(wait_for_collector(), timeout=1)
 
         self.assertIs(runtime.collector, collector)
+        self.assertTrue(collector.calls)
+        await runtime.stop()
+
+    async def test_research_start_failure_does_not_prevent_production_runtime(self) -> None:
+        class FailingResearch:
+            def start(self) -> None:
+                raise OSError("synthetic database failure")
+
+            def set_eligible_symbols(self, _symbols: object) -> None:
+                return None
+
+            def observe_oi(self, _sample: object) -> None:
+                return None
+
+            def observe_price(self, _update: object) -> None:
+                return None
+
+            async def stop(self) -> None:
+                return None
+
+        collector = FakeCollector()
+        runtime = RollingOIShadowRuntime(
+            FakeAPI(),
+            lambda: ["BTCUSDT"],
+            stream_factory=FakeStream,
+            collector_factory=lambda *_args, **_kwargs: collector,
+            research_telemetry_enabled=True,
+            research_factory=lambda *_args, **_kwargs: FailingResearch(),
+        )
+        with self.assertLogs("oitgbot.rolling.runtime", level="ERROR") as captured:
+            await runtime.start()
+        await runtime.wait_initialized()
+
+        async def wait_for_collector() -> None:
+            while not collector.calls:
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(wait_for_collector(), timeout=1)
+        self.assertIn("reason=start_failed", "\n".join(captured.output))
         self.assertTrue(collector.calls)
         await runtime.stop()
 

@@ -22,13 +22,8 @@ DEFAULT_SHARED_BASES = (
     Path("/sdcard/Download"),
     Path("/storage/emulated/0/Download"),
 )
-DIAGNOSTIC_FILES = (
-    "bot.log",
-    "bot.log.1",
-    "rolling_oi.log",
-    "rolling_oi.log.1",
-    "rolling_oi_signal_state.json",
-)
+LOG_FILES = ("bot.log", "rolling_oi.log")
+STATE_FILES = ("rolling_oi_signal_state.json",)
 
 
 def timestamp_name(now: datetime | None = None) -> str:
@@ -57,8 +52,23 @@ def choose_export_dir(shared_bases: Iterable[Path]) -> Path:
 
 
 def selected_files(project_root: Path) -> list[Path]:
-    """Return only active logs, their immediate rotations, and signal state."""
-    return [project_root / name for name in DIAGNOSTIC_FILES if (project_root / name).is_file()]
+    """Return active logs, every existing rotation, and signal state."""
+    selected: list[Path] = []
+    for name in LOG_FILES:
+        active = project_root / name
+        if active.is_file():
+            selected.append(active)
+        selected.extend(
+            path
+            for path in sorted(project_root.glob(f"{name}.*"))
+            if path.is_file()
+        )
+    selected.extend(
+        project_root / name
+        for name in STATE_FILES
+        if (project_root / name).is_file()
+    )
+    return selected
 
 
 def _command_output(command: list[str], project_root: Path) -> str:

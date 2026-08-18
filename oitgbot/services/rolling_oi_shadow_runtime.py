@@ -18,6 +18,7 @@ from oitgbot.services.current_oi_collector import (
 from oitgbot.services.mark_price_stream import MarkPriceStream
 from oitgbot.services.price_state import PriceStateStore
 from oitgbot.services.rate_limit_budget import BudgetState, RateLimitBudget
+from oitgbot.services.research_telemetry import ResearchTelemetry
 from oitgbot.services.rolling_oi_calculator import (
     AccumulationAnalyzer,
     RollingOICalculator,
@@ -131,6 +132,10 @@ class RollingOIShadowRuntime:
         collector_factory: Callable[..., Any] = CurrentOICollector,
         signal_publisher: Any | None = None,
         signal_state_persistence: RollingOISignalStatePersistence | None = None,
+        research_telemetry_enabled: bool = False,
+        research_db_path: str = "state/oi_research.sqlite3",
+        research_retention_days: float = 14.0,
+        research_factory: Callable[..., Any] = ResearchTelemetry,
     ) -> None:
         if cadence_seconds <= 0 or not math.isfinite(cadence_seconds):
             raise ValueError("cadence_seconds must be finite and positive")
@@ -176,6 +181,15 @@ class RollingOIShadowRuntime:
         self._collector_factory = collector_factory
         self.signal_publisher = signal_publisher
         self.signal_state_persistence = signal_state_persistence
+        self.research_telemetry = (
+            research_factory(
+                research_db_path,
+                retention_days=research_retention_days,
+                clock=clock,
+            )
+            if research_telemetry_enabled
+            else None
+        )
 
         self.price_state = PriceStateStore(())
         self.rolling_store = RollingOIStore(
@@ -189,6 +203,10 @@ class RollingOIShadowRuntime:
             rearm_threshold_pct=signal_5m_rearm_pct,
         )
         self.price_stream = stream_factory(self.price_state)
+        if self.research_telemetry is not None:
+            set_observer = getattr(self.price_stream, "set_observer", None)
+            if set_observer is not None:
+                set_observer(self.research_telemetry.observe_price)
         self.rate_budget: Any | None = None
         self.collector: Any | None = None
 
@@ -214,6 +232,13 @@ class RollingOIShadowRuntime:
         if self._started:
             return
         self._started = True
+        if self.research_telemetry is not None:
+            try:
+                await asyncio.to_thread(self.research_telemetry.start)
+            except Exception:
+                logger.exception(
+                    "RESEARCH_TELEMETRY status=disabled reason=start_failed"
+                )
         logger.info(
             "ROLLING_SHADOW_STATUS enabled=true cadence_s=%.0f retention_min=%.0f workers=%d",
             self.cadence_seconds,
@@ -250,6 +275,8 @@ class RollingOIShadowRuntime:
         try:
             symbols = await asyncio.to_thread(self._load_symbols)
             self.price_state.set_eligible_symbols(symbols)
+            if self.research_telemetry is not None:
+                self.research_telemetry.set_eligible_symbols(symbols)
             if self.signal_state_persistence is not None:
                 await asyncio.to_thread(
                     self.signal_state_persistence.load,
@@ -277,6 +304,11 @@ class RollingOIShadowRuntime:
                 price_max_age_seconds=self.price_max_age_seconds,
                 transaction_age_warning_seconds=(
                     self.transaction_age_warning_seconds
+                ),
+                observation_sink=(
+                    self.research_telemetry.observe_oi
+                    if self.research_telemetry is not None
+                    else None
                 ),
             )
             self._rate_budget_state = BudgetState.SAFE.value
@@ -330,6 +362,8 @@ class RollingOIShadowRuntime:
         try:
             symbols = await asyncio.to_thread(self._load_symbols)
             self.price_state.set_eligible_symbols(symbols)
+            if self.research_telemetry is not None:
+                self.research_telemetry.set_eligible_symbols(symbols)
             result = await self.collector.collect_cycle(
                 symbols, cadence_seconds=self.cadence_seconds
             )
@@ -863,4 +897,7 @@ class RollingOIShadowRuntime:
                 await self._stream_task
         if self._publish_tasks:
             await asyncio.gather(*self._publish_tasks, return_exceptions=True)
+        if self.research_telemetry is not None:
+            with contextlib.suppress(Exception):
+                await self.research_telemetry.stop()
         logger.info("ROLLING_SHADOW_STATUS status=stopped")

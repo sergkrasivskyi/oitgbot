@@ -45,6 +45,7 @@ htmlcov/
 logs/
 bot.log
 bot.log.*
+rolling_oi.log.*
 rolling_oi_signal_state.json
 monitoring.log
 app.log
@@ -53,6 +54,9 @@ app.log
 *.db
 *.sqlite
 *.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+state/oi_research.sqlite3*
 
 # OS junk
 .DS_Store

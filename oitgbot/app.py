@@ -46,9 +46,7 @@ def build_shadow_runtime(
         workers=settings.rolling_oi_workers,
         retention_minutes=settings.rolling_oi_retention_minutes,
         price_max_age_seconds=settings.rolling_oi_price_max_age_seconds,
-        observation_max_age_seconds=(
-            settings.rolling_oi_observation_max_age_seconds
-        ),
+        observation_max_age_seconds=(settings.rolling_oi_observation_max_age_seconds),
         transaction_age_warning_seconds=(
             settings.rolling_oi_transaction_age_warning_seconds
         ),
@@ -63,6 +61,9 @@ def build_shadow_runtime(
             settings.rolling_oi_signal_state_file,
             settings.rolling_oi_signal_state_ttl_minutes,
         ),
+        research_telemetry_enabled=settings.research_telemetry_enabled,
+        research_db_path=settings.research_telemetry_db_path,
+        research_retention_days=settings.research_telemetry_retention_days,
     )
 
 
@@ -108,21 +109,28 @@ async def main_async() -> None:
             loop.add_signal_handler(sig, _request_shutdown, sig_name)
 
     try:
-        log.info("Initializing Telegram application...")
-        app = (
-            Application.builder()
-            .token(settings.bot_token)
-            .connect_timeout(10)
-            .read_timeout(20)
-            .write_timeout(20)
-            .pool_timeout(10)
-            .build()
-        )
-        await app.initialize()
+        if settings.telegram_publish_enabled:
+            log.info("Initializing Telegram application...")
+            app = (
+                Application.builder()
+                .token(settings.bot_token)
+                .connect_timeout(10)
+                .read_timeout(20)
+                .write_timeout(20)
+                .pool_timeout(10)
+                .build()
+            )
+            await app.initialize()
+        else:
+            log.info(
+                "Telegram publication disabled; Telegram application not initialized"
+            )
 
         log.info("Initializing services...")
         binance_api = BinanceAPI()
-        telegram_sender = TelegramSender(app)
+        telegram_sender = TelegramSender(
+            app, publish_enabled=settings.telegram_publish_enabled
+        )
         report_formatter = ReportFormatter()
 
         jobs = SchedulerJobs(
@@ -165,8 +173,13 @@ async def main_async() -> None:
         log.info("PROP symbols loaded: %d", len(settings.prop_symbols))
         log.info("Logging to %s", settings.log_file)
         log.info("Rolling OI logging to %s", settings.rolling_oi_log_file)
-        log.info("HTTP config: timeout=%s, retries=%s", settings.http_timeout, settings.http_retries)
-        log.info("Telegram timeouts: connect=10, read=20, write=20, pool=10")
+        log.info(
+            "HTTP config: timeout=%s, retries=%s",
+            settings.http_timeout,
+            settings.http_retries,
+        )
+        if settings.telegram_publish_enabled:
+            log.info("Telegram timeouts: connect=10, read=20, write=20, pool=10")
 
         await stop_event.wait()
 

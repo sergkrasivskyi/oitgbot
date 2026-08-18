@@ -29,16 +29,33 @@ def _get_set(name: str) -> set[str]:
 @dataclass(frozen=True)
 class Settings:
     bot_token: str = field(default_factory=lambda: os.environ.get("BOT_TOKEN", ""))
-    all_channel_id: str = field(default_factory=lambda: os.environ.get("ALL_CHANNEL_ID", ""))
-    prop_channel_id: str = field(default_factory=lambda: os.environ.get("PROP_CHANNEL_ID", ""))
+    all_channel_id: str = field(
+        default_factory=lambda: os.environ.get("ALL_CHANNEL_ID", "")
+    )
+    prop_channel_id: str = field(
+        default_factory=lambda: os.environ.get("PROP_CHANNEL_ID", "")
+    )
+    telegram_publish_enabled: bool = field(
+        default_factory=lambda: _get_bool("TELEGRAM_PUBLISH_ENABLED", "1")
+    )
     prop_symbols: set[str] = field(default_factory=lambda: _get_set("PROP_SYMBOLS"))
 
-    impulse_threshold: float = field(default_factory=lambda: _get_float("IMPULSE_THRESHOLD", "5.0"))
-    top_threshold: float = field(default_factory=lambda: _get_float("TOP_THRESHOLD", "1.0"))
+    impulse_threshold: float = field(
+        default_factory=lambda: _get_float("IMPULSE_THRESHOLD", "5.0")
+    )
+    top_threshold: float = field(
+        default_factory=lambda: _get_float("TOP_THRESHOLD", "1.0")
+    )
 
-    send_empty_reports: bool = field(default_factory=lambda: _get_bool("SEND_EMPTY_REPORTS", "0"))
-    show_top_when_empty: bool = field(default_factory=lambda: _get_bool("SHOW_TOP_WHEN_EMPTY", "0"))
-    top_when_empty_n: int = field(default_factory=lambda: _get_int("TOP_WHEN_EMPTY_N", "10"))
+    send_empty_reports: bool = field(
+        default_factory=lambda: _get_bool("SEND_EMPTY_REPORTS", "0")
+    )
+    show_top_when_empty: bool = field(
+        default_factory=lambda: _get_bool("SHOW_TOP_WHEN_EMPTY", "0")
+    )
+    top_when_empty_n: int = field(
+        default_factory=lambda: _get_int("TOP_WHEN_EMPTY_N", "10")
+    )
 
     debug_oi: bool = field(default_factory=lambda: _get_bool("DEBUG_OI", "0"))
 
@@ -46,10 +63,18 @@ class Settings:
     rolling_oi_log_file: str = field(
         default_factory=lambda: os.environ.get("ROLLING_OI_LOG_FILE", "rolling_oi.log")
     )
-    log_max_bytes: int = field(default_factory=lambda: _get_int("LOG_MAX_BYTES", "5000000"))
-    log_backup_count: int = field(default_factory=lambda: _get_int("LOG_BACKUP_COUNT", "5"))
+    log_max_bytes: int = field(
+        default_factory=lambda: _get_int("LOG_MAX_BYTES", "5000000")
+    )
+    log_backup_count: int = field(
+        default_factory=lambda: _get_int("LOG_BACKUP_COUNT", "5")
+    )
 
-    binance_base_url: str = field(default_factory=lambda: os.environ.get("BINANCE_BASE_URL", "https://fapi.binance.com"))
+    binance_base_url: str = field(
+        default_factory=lambda: os.environ.get(
+            "BINANCE_BASE_URL", "https://fapi.binance.com"
+        )
+    )
     http_timeout: int = field(default_factory=lambda: _get_int("HTTP_TIMEOUT", "15"))
     http_retries: int = field(default_factory=lambda: _get_int("HTTP_RETRIES", "2"))
 
@@ -94,9 +119,7 @@ class Settings:
         )
     )
     rolling_oi_signal_state_ttl_minutes: float = field(
-        default_factory=lambda: _get_float(
-            "ROLLING_OI_SIGNAL_STATE_TTL_MINUTES", "15"
-        )
+        default_factory=lambda: _get_float("ROLLING_OI_SIGNAL_STATE_TTL_MINUTES", "15")
     )
     rolling_oi_20m_observation_pct: float = field(
         default_factory=lambda: _get_float("ROLLING_OI_20M_OBSERVATION_PCT", "1")
@@ -107,17 +130,29 @@ class Settings:
     rolling_oi_120m_observation_pct: float = field(
         default_factory=lambda: _get_float("ROLLING_OI_120M_OBSERVATION_PCT", "4")
     )
+    research_telemetry_enabled: bool = field(
+        default_factory=lambda: _get_bool("RESEARCH_TELEMETRY_ENABLED", "1")
+    )
+    research_telemetry_db_path: str = field(
+        default_factory=lambda: os.environ.get(
+            "RESEARCH_TELEMETRY_DB_PATH", "state/oi_research.sqlite3"
+        )
+    )
+    research_telemetry_retention_days: float = field(
+        default_factory=lambda: _get_float("RESEARCH_TELEMETRY_RETENTION_DAYS", "14")
+    )
 
     max_tg_len: int = 4096
 
     def validate(self) -> None:
         missing = []
-        if not self.bot_token:
-            missing.append("BOT_TOKEN")
-        if not self.all_channel_id:
-            missing.append("ALL_CHANNEL_ID")
-        if not self.prop_channel_id:
-            missing.append("PROP_CHANNEL_ID")
+        if self.telegram_publish_enabled:
+            if not self.bot_token:
+                missing.append("BOT_TOKEN")
+            if not self.all_channel_id:
+                missing.append("ALL_CHANNEL_ID")
+            if not self.prop_channel_id:
+                missing.append("PROP_CHANNEL_ID")
 
         if missing:
             raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
@@ -133,13 +168,9 @@ class Settings:
             if self.rolling_oi_price_max_age_seconds <= 0:
                 invalid.append("ROLLING_OI_PRICE_MAX_AGE_SECONDS must be > 0")
             if self.rolling_oi_observation_max_age_seconds <= 0:
-                invalid.append(
-                    "ROLLING_OI_OBSERVATION_MAX_AGE_SECONDS must be > 0"
-                )
+                invalid.append("ROLLING_OI_OBSERVATION_MAX_AGE_SECONDS must be > 0")
             if self.rolling_oi_transaction_age_warning_seconds <= 0:
-                invalid.append(
-                    "ROLLING_OI_TRANSACTION_AGE_WARNING_SECONDS must be > 0"
-                )
+                invalid.append("ROLLING_OI_TRANSACTION_AGE_WARNING_SECONDS must be > 0")
             if (
                 not math.isfinite(self.rolling_oi_5m_trigger_pct)
                 or self.rolling_oi_5m_trigger_pct <= 0
@@ -153,8 +184,7 @@ class Settings:
             if (
                 math.isfinite(self.rolling_oi_5m_trigger_pct)
                 and math.isfinite(self.rolling_oi_5m_rearm_pct)
-                and self.rolling_oi_5m_rearm_pct
-                >= self.rolling_oi_5m_trigger_pct
+                and self.rolling_oi_5m_rearm_pct >= self.rolling_oi_5m_trigger_pct
             ):
                 invalid.append(
                     "ROLLING_OI_5M_REARM_PCT must be less than "
@@ -169,8 +199,20 @@ class Settings:
                 )
             if not self.rolling_oi_signal_state_file.strip():
                 invalid.append("ROLLING_OI_SIGNAL_STATE_FILE must not be empty")
+            if self.research_telemetry_enabled:
+                if not self.research_telemetry_db_path.strip():
+                    invalid.append("RESEARCH_TELEMETRY_DB_PATH must not be empty")
+                if (
+                    not math.isfinite(self.research_telemetry_retention_days)
+                    or self.research_telemetry_retention_days <= 0
+                ):
+                    invalid.append(
+                        "RESEARCH_TELEMETRY_RETENTION_DAYS must be finite and > 0"
+                    )
             if invalid:
-                raise RuntimeError("Invalid rolling OI shadow config: " + "; ".join(invalid))
+                raise RuntimeError(
+                    "Invalid rolling OI shadow config: " + "; ".join(invalid)
+                )
 
 
 settings = Settings()
