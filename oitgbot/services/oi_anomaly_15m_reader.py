@@ -98,6 +98,27 @@ def analyze_database(
     min_history: int = 96,
     now_utc: datetime | None = None,
 ) -> tuple[datetime | None, tuple[AnomalyResult, ...]]:
+    start, results, _ = analyze_database_with_observations(
+        path,
+        as_of=as_of,
+        symbols=symbols,
+        baseline_days=baseline_days,
+        min_history=min_history,
+        now_utc=now_utc,
+    )
+    return start, results
+
+
+def analyze_database_with_observations(
+    path: str | Path,
+    *,
+    as_of: datetime | None = None,
+    symbols: tuple[str, ...] = (),
+    baseline_days: int = 14,
+    min_history: int = 96,
+    now_utc: datetime | None = None,
+) -> tuple[datetime | None, tuple[AnomalyResult, ...], tuple]:
+    """Return Task 23 results with their shared bounded aligned history."""
     validate_options(baseline_days, min_history)
     symbols = tuple(sorted({symbol.upper() for symbol in symbols}))
     with connect_read_only(path) as connection:
@@ -109,14 +130,16 @@ def analyze_database(
             )
         )
         if start is None:
-            return None, ()
+            return None, (), ()
         results = []
         seen = set()
+        all_observations = []
         rows = read_bars(
             connection, start - timedelta(days=baseline_days), start + INTERVAL, symbols
         )
         for symbol, group in groupby(rows, key=lambda bar: bar.symbol):
             observations = aggregate_bars(group)
+            all_observations.extend(observations)
             current = next(
                 (item for item in observations if item.interval_start_utc == start),
                 aggregate_interval(symbol, start, ()),
@@ -139,4 +162,4 @@ def analyze_database(
                     min_history=min_history,
                 )
             )
-    return start, tuple(sorted(results, key=research_sort_key))
+    return start, tuple(sorted(results, key=research_sort_key)), tuple(all_observations)

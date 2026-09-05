@@ -12,9 +12,10 @@
   shared Downloads.
 - Task 20: completed collector snapshot implemented for production 20m TOP.
 - Task 21: durable long-term OI + Price research telemetry implemented.
-- Task 23: analytics core implemented with a read-only offline CLI. Production
-  remains 5m IMPULSE + 20m TOP; 15m is NOT wired to runtime and has no Telegram
-  report or NEW marker. See the Task 23 details in the anomaly specification.
+- Task 23: analytics core implemented with a read-only offline CLI.
+- Task 24: pure 15m eligibility, Z-first ranking and restart-reconstructible NEW(14h)
+  semantics implemented. Production remains 5m IMPULSE + 20m TOP; 15m has no
+  runtime wiring, Telegram report or permanent NEW state file.
 
 ## Product architecture after Task 21
 
@@ -83,8 +84,8 @@ replacement of 20m TOP by UTC-aligned 15m OI ANOMALY TOP. See
 - Task 22 — product/specification documentation rebaseline (this task).
 - Task 23 — analytics core implemented: aligned aggregation, classic/robust Z,
   percentile, coverage, read-only SQLite CLI and CSV; no runtime/Telegram changes.
-- Task 24 — pure NEW(14h), ranking, and eligibility layer, including restart
-  reconstruction from historical telemetry.
+- Task 24 — implemented: eligibility, deterministic Z-first ranking, NEW(14h)
+  history reconstruction, read-only candidate CLI and CSV; no runtime/Telegram changes.
 - Task 25 — runtime shadow integration only; existing 20m TOP stays production
   and no 15m Telegram messages are sent.
 - Task 26 — production cutover: replace 20m TOP with 15m anomaly TOP while

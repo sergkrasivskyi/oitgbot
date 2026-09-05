@@ -176,7 +176,7 @@ profitability.
 |---|---|
 | 22 | Product/specification documentation rebaseline (this task). |
 | 23 | Pure 15m anomaly analytics core and offline CLI: aligned aggregation, OI%, PX%, classic/robust Z, percentile, coverage, deterministic tests; no runtime or Telegram change. |
-| 24 | Pure NEW(14h), ranking, and eligibility layer, including restart reconstruction from historical data. |
+| 24 | Implemented: pure eligibility, deterministic ranking, NEW(14h), restart-reconstructible history, read-only candidate CLI and tests; no runtime or Telegram change. |
 | 25 | Runtime shadow integration with timing/coverage/baseline/skip diagnostics and no Telegram; existing 20m TOP remains production. |
 | 26 | Production cutover: replace 20m TOP, preserve 5m IMPULSE and ALL/PROP routing, and introduce final format/NEW marker. |
 | 27 | Live stabilization and final documentation cleanup; validate timing, duplicates, restart/NEW behavior, Z ordering, routing, and CoinGlass-friendly alignment; only then describe 15m as current in README. |
@@ -254,6 +254,53 @@ all observation, quality, score and baseline fields, with empty cells for None.
 CSV exclusively creates a new file and refuses to overwrite existing files,
 including the database or WAL. No generated research artifacts belong in Git.
 
+## Task 24 implementation details (offline research only)
+
+The candidate layer is separate from Task 23 statistics. Future-v1 eligibility
+is exactly valid `OI15% >= +1.0%`; the pure API accepts a finite positive
+research threshold, while no production setting changed. PX15%, classic-Z
+availability, robust Z and percentile never gate eligibility. An invalid current
+observation is ineligible with its explicit Task 23 reason. A Z=N/A result at
+or above +1% remains eligible.
+
+Eligible candidates receive ranks beginning at 1. Finite classic Z values sort
+first by Z descending, then OI15% descending, then lexical symbol ascending.
+Z=N/A candidates follow, ordered by OI15% descending then symbol ascending.
+No price, robust-Z or percentile value participates. Ineligible observations have
+no rank. The candidate result retains the complete Task 23 anomaly result and
+adds eligibility, rank, NEW and history-quality diagnostics.
+
+NEW uses the same aligned valid OI15% observations and threshold. For a current
+eligible interval T, prior eligibility is tested in `[T - 14h, T)`: the lower
+boundary is included and T is excluded. Thus an eligible appearance precisely
+14 hours earlier makes NEW false; one at 14h15m does not. NEW is independent of
+historical Z, rank, price, robust Z, percentile and visible TOP-N rows.
+
+`EligibilityHistory` is an in-memory, thread-independent index of valid and
+eligible interval starts. It reconstructs from Task 23 aligned observations,
+registers each later closed observation, and prunes starts older than the
+inclusive lookback boundary. Task 25 can reconstruct it from the bounded SQLite
+analysis history after a restart, decide the current interval before registering
+that interval, then retain it in memory. No permanent NEW-state file is used.
+
+The index reports valid interval count, expected count (56 at 14 hours),
+coverage ratio, prior eligible count and last eligible start. Sparse history does
+not suppress a NEW result, but its coverage is visible. If there is no prior
+valid telemetry at all for the symbol, or only the current interval exists,
+`is_new` is `None` with `history_unavailable`; False is reserved for a prior
+eligible appearance or an ineligible current result. Historical invalid/missing
+intervals never qualify and are never fabricated.
+
+`tools/oi_anomaly_15m_candidates.py` reuses Task 23's single bounded aligned
+analysis read and SQLite read-only/WAL snapshot. It adds `--eligible-only`,
+`--new-only` (which shows only `NEW=True`, excluding false and unknown),
+`--eligibility-threshold`, `--new-lookback-hours` and full CSV decisions.
+
+```bash
+python -m tools.oi_anomaly_15m_candidates --db state/oi_research.sqlite3 --top 30
+python -m tools.oi_anomaly_15m_candidates --db state/oi_research.sqlite3 --symbol BTCUSDT --eligible-only
+python -m tools.oi_anomaly_15m_candidates --db state/oi_research.sqlite3 --new-only --output candidates.csv
+```
 ## Deferred backlog (unchanged)
 
 The following remains deferred, not cancelled, and has no new task number:
