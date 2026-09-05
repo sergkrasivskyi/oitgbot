@@ -1,6 +1,8 @@
 # Hybrid Rolling Open Interest Architecture
 
-Status: implementation specification for Tasks 7+
+Status: historical/current rolling architecture. Current production remains 5m
+IMPULSE plus scheduled 20m TOP. The approved but not-yet-implemented 15m
+replacement specification is `docs/15m_oi_anomaly_top_spec.md`.
 
 This design replaces historical five-minute Open Interest buckets as the primary real-time signal source. It preserves the historical endpoint for diagnostics and shadow validation while building production signals from timestamped current OI samples and WebSocket mark prices.
 
@@ -536,6 +538,10 @@ starts clean on application restart. State for symbols removed from the current
 eligible universe is pruned.
 
 ## 20-minute TOP behavior
+
+This section documents **current production behavior**, not the approved 15m
+target. The 20m TOP remains active until the future shadow-validation and
+cutover work specified in `15m_oi_anomaly_top_spec.md`.
 
 TOP remains schedule-driven at the existing `minute=0,20,40`, `second=10` cadence. The job reads the latest store snapshot and calculates rolling 20m results; it never initiates a Binance OI collection.
 

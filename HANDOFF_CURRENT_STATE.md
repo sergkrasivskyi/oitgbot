@@ -70,23 +70,32 @@ existing `--db` override; never mix the test and production research databases.
 Normal tablet diagnostic ZIPs include all existing rotations of both logs but
 exclude the research database and its WAL/SHM files.
 
-## Planned roadmap (Tasks 22-27 are not yet implemented)
+## Approved next target and roadmap (Tasks 22-27)
 
-- Task 22 — Grid Candidate research: smooth OI build-up -> price weakness ->
-  price stabilization. This hypothesis is not simply `OI up + Price down`; the
-  key is smooth OI accumulation followed by price stabilization while OI
-  remains elevated.
-- Task 23 — Impulse -> Pullback -> Continuation research: positive OI+price
-  impulse, pullback depth, OI behavior during pullback, high reclaim, and later
-  outcomes. Capture the absolute price path/high/low data so pullback depth and
-  subsequent high reclaim can be measured statistically.
-- Task 24 — Telegram report UX system with explicit type + horizon headings.
-- Task 25 — 60m/120m accumulation product decision based on collected data.
-- Task 26 — Statistical tuning of production 5m/20m thresholds and a decision
-  on negative OI impulses.
-- Task 27 — Remaining operational hardening: env/CRLF resilience,
-  restart-state field validation, diagnostics, tablet Git workflow,
-  Termux:Boot/autostart, and one-instance health.
+Current production is still 5m IMPULSE plus scheduled 20m TOP. Task 22 is
+documentation-only: it approves, but does not implement or deploy, the future
+replacement of 20m TOP by UTC-aligned 15m OI ANOMALY TOP. See
+`docs/15m_oi_anomaly_top_spec.md` for the implementation-ready product contract.
 
+- Task 22 — product/specification documentation rebaseline (this task).
+- Task 23 — pure 15m anomaly analytics core + offline CLI; no runtime or
+  Telegram changes.
+- Task 24 — pure NEW(14h), ranking, and eligibility layer, including restart
+  reconstruction from historical telemetry.
+- Task 25 — runtime shadow integration only; existing 20m TOP stays production
+  and no 15m Telegram messages are sent.
+- Task 26 — production cutover: replace 20m TOP with 15m anomaly TOP while
+  preserving 5m IMPULSE and ALL/PROP routing.
+- Task 27 — live stabilization and final documentation cleanup; only then may
+  README describe 15m as current production.
+
+## Deferred backlog (not cancelled; no new task numbers)
+
+- Grid Candidate research.
+- Impulse -> Pullback -> Continuation research.
+- 60m/120m accumulation product decision.
+- Production threshold tuning, including negative OI impulses.
+- Operational hardening (env/CRLF, restart field validation, diagnostics,
+  tablet Git workflow, Termux:Boot/autostart, and one-instance health).
 Production thresholds remain unchanged until research telemetry provides
 sufficient evidence.

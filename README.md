@@ -265,28 +265,26 @@ Get-Content .\rolling_oi.log -Tail 0 -Wait |
 
 Tasks 20 and 21 are implemented: production TOP uses completed collector
 snapshots, and durable OI + Price research telemetry supplies multi-day 5m
-source bars. The following items remain planned and are not yet implemented:
+source bars. **Approved next change (not deployed):** after shadow validation,
+the current 20m TOP will be replaced by a UTC-aligned 15m OI ANOMALY TOP; the
+existing 5m IMPULSE remains unchanged. The full target contract is in
+`docs/15m_oi_anomaly_top_spec.md`.
 
-1. **Task 22 — Grid Candidate research:** study smooth OI build-up, then price
-   weakness, then price stabilization while OI remains elevated. This is not
-   simply an `OI up + Price down` rule.
-2. **Task 23 — Impulse -> Pullback -> Continuation research:** capture positive
-   OI+price impulse, pullback depth, OI behavior during pullback, high reclaim,
-   and subsequent outcomes. Telemetry must retain the absolute price path,
-   highs, and lows so these outcomes can be measured statistically.
-3. **Task 24 — Telegram report UX system:** add explicit type and horizon
-   headings.
-4. **Task 25 — 60m/120m accumulation product decision:** decide from collected
-   evidence whether to productize these horizons.
-5. **Task 26 — Statistical production tuning:** evaluate 5m/20m thresholds and
-   whether negative OI impulses belong in production.
-6. **Task 27 — Remaining operational hardening:** env/CRLF resilience,
-   restart-state field validation, diagnostics, tablet Git workflow,
-   Termux:Boot/autostart, and one-instance health.
+1. **Task 22:** documentation/specification rebaseline (this task).
+2. **Task 23:** pure 15m anomaly analytics core + offline CLI, with no runtime
+   or Telegram changes.
+3. **Task 24:** NEW(14h), ranking, and eligibility layer.
+4. **Task 25:** runtime shadow integration; 20m TOP remains production and 15m
+   sends no Telegram messages.
+5. **Task 26:** production cutover from 20m TOP to 15m anomaly TOP.
+6. **Task 27:** live stabilization and final documentation cleanup.
+
+Grid Candidate, Impulse -> Pullback -> Continuation, 60m/120m product
+decision, threshold tuning, and operational hardening are deferred backlog,
+not cancelled.
 
 Production 5m/20m thresholds remain unchanged until the research telemetry
 provides sufficient evidence.
-
 ## Tablet test release (Termux + proot Ubuntu)
 
 Runtime stack: Android -> Termux -> `proot-distro` Ubuntu -> this project ->
