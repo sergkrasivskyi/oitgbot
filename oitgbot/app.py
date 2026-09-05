@@ -14,6 +14,8 @@ from .clients.telegram_sender import TelegramSender
 from .config import settings
 from .logger_setup import setup_logging
 from .scheduler_jobs import SchedulerJobs
+from .services.oi_anomaly_15m_publisher import OIAnomaly15mPublisher
+from .services.oi_anomaly_15m_runtime import OIAnomaly15mRuntime
 from .services.report_formatter import ReportFormatter
 from .services.rolling_impulse_publisher import RollingImpulsePublisher
 from .services.rolling_oi_shadow_runtime import RollingOIShadowRuntime
@@ -67,11 +69,42 @@ def build_shadow_runtime(
     )
 
 
+def build_oi_anomaly_runtime(
+    telegram_sender: TelegramSender,
+    report_formatter: ReportFormatter,
+) -> OIAnomaly15mRuntime | None:
+    if not settings.oi_anomaly_15m_enabled:
+        return None
+    publisher = None
+    if settings.oi_anomaly_15m_telegram_enabled:
+        publisher = OIAnomaly15mPublisher(
+            telegram_sender,
+            report_formatter,
+            all_channel_id=settings.all_channel_id,
+            prop_channel_id=settings.prop_channel_id,
+            prop_symbols=settings.prop_symbols,
+            send_empty_reports=settings.send_empty_reports,
+            max_message_length=settings.max_tg_len,
+        )
+    return OIAnomaly15mRuntime(
+        settings.research_telemetry_db_path,
+        baseline_days=settings.oi_anomaly_15m_baseline_days,
+        min_history=settings.oi_anomaly_15m_min_history,
+        eligibility_threshold_pct=settings.oi_anomaly_15m_eligibility_pct,
+        new_lookback_hours=settings.oi_anomaly_15m_new_lookback_hours,
+        log_top_n=settings.oi_anomaly_15m_log_top_n,
+        cadence_seconds=settings.rolling_oi_cadence_seconds,
+        publisher=publisher,
+    )
+
+
 def configure_scheduler(
     scheduler: AsyncIOScheduler,
     jobs: SchedulerJobs,
 ) -> None:
-    """Register the rolling 20m TOP production snapshot schedule."""
+    """Register the rolling 20m TOP production snapshot schedule when enabled."""
+    if not settings.rolling_oi_20m_top_enabled:
+        return
     scheduler.add_job(
         jobs.job_top,
         CronTrigger(minute="0,20,40", second=10),
@@ -91,6 +124,7 @@ async def main_async() -> None:
     scheduler: AsyncIOScheduler | None = None
     binance_api: BinanceAPI | None = None
     shadow_runtime: RollingOIShadowRuntime | None = None
+    anomaly_runtime: OIAnomaly15mRuntime | None = None
     jobs: SchedulerJobs | None = None
 
     stop_event = asyncio.Event()
@@ -151,6 +185,16 @@ async def main_async() -> None:
                 "ROLLING_SHADOW_STATUS enabled=false"
             )
 
+        if settings.oi_anomaly_15m_enabled:
+            anomaly_runtime = build_oi_anomaly_runtime(
+                telegram_sender, report_formatter
+            )
+            assert anomaly_runtime is not None
+            await anomaly_runtime.start()
+        else:
+            logging.getLogger("oitgbot.rolling.oi_anomaly_15m.runtime").info(
+                "OI_ANOMALY_15M_RUNTIME enabled=false"
+            )
         scheduler = AsyncIOScheduler(event_loop=loop)
 
         configure_scheduler(scheduler, jobs)
@@ -158,8 +202,11 @@ async def main_async() -> None:
         scheduler.start()
 
         log.info(
-            "Publisher started. rolling_impulses=collector-cycle, "
-            "rolling_top=0,20,40@sec10"
+            "Publisher started. rolling_impulses=collector-cycle, rolling_top=%s, "
+            "oi_anomaly_15m=%s, oi_anomaly_telegram=%s",
+            "0,20,40@sec10" if settings.rolling_oi_20m_top_enabled else "disabled",
+            settings.oi_anomaly_15m_enabled,
+            settings.oi_anomaly_15m_telegram_enabled,
         )
         log.info(
             "Thresholds: rolling_impulse_trigger=%.2f%%, rolling_impulse_rearm=%.2f%%, "
@@ -192,6 +239,9 @@ async def main_async() -> None:
     finally:
         log.info("Shutting down...")
 
+        if anomaly_runtime is not None:
+            with contextlib.suppress(Exception):
+                await anomaly_runtime.stop()
         if shadow_runtime is not None:
             with contextlib.suppress(Exception):
                 await shadow_runtime.stop()

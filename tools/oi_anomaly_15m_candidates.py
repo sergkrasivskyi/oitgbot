@@ -10,7 +10,10 @@ from datetime import datetime
 from pathlib import Path
 
 from oitgbot.services.oi_anomaly_15m import AnomalyResult, Observation, utc
-from oitgbot.services.oi_anomaly_15m_candidates import OIAnomaly15mCandidate
+from oitgbot.services.oi_anomaly_15m_candidates import (
+    DEFAULT_NEW_LOOKBACK_HOURS,
+    OIAnomaly15mCandidate,
+)
 from oitgbot.services.oi_anomaly_15m_candidates_reader import (
     analyze_candidates_database,
 )
@@ -78,7 +81,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Show only candidates with NEW=True; unknown is excluded.",
     )
     parser.add_argument("--eligibility-threshold", type=float, default=1.0)
-    parser.add_argument("--new-lookback-hours", type=float, default=14.0)
+    parser.add_argument(
+        "--new-lookback-hours", type=float, default=DEFAULT_NEW_LOOKBACK_HOURS
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:

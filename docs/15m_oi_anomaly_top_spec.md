@@ -1,7 +1,7 @@
 # 15m OI Anomaly TOP — approved product specification
 
 Status: Task 23 pure analytics and offline CLI implemented. Production 15m
-remains an approved target; no runtime integration or Telegram 15m report yet.
+now has an opt-in live runtime and staging Telegram report; production defaults remain unchanged.
 
 ## Scope and current production
 
@@ -104,11 +104,11 @@ Telegram ranking or display field.
 ## NEW marker
 
 Use `🆕` when a symbol is eligible in the current aligned 15m interval and had
-no eligible 15m interval in the preceding 14 hours. Eligibility history means
+no eligible 15m interval in the preceding 12 hours. Eligibility history means
 all intervals with `OI15% >= +1.0%`, not only visible TOP-N rows; the current
 interval cannot count as its own prior appearance.
 
-Restart behavior must reconstruct the prior 14-hour eligibility history from
+Restart behavior must reconstruct the prior 12-hour eligibility history from
 durable research telemetry when required, optionally keeping an in-memory cache
 after startup. A restart must not create a market-wide false NEW storm. Do not
 require a new permanent JSON state file unless later implementation work proves
@@ -158,7 +158,7 @@ profitability.
 - Classic Z is v1's primary rank, with a 14-day same-symbol history and a
   minimum of 96 prior observations; current interval is excluded.
 - Population standard deviation is the chosen classic-Z convention.
-- NEW uses a 14-hour lookback across all eligible intervals.
+- NEW uses a 12-hour lookback across all eligible intervals.
 - Existing closed 5m telemetry is the source: no new market-data requests.
 - Shadow validation precedes cutover; robust Z and percentile are research-only.
 
@@ -176,8 +176,8 @@ profitability.
 |---|---|
 | 22 | Product/specification documentation rebaseline (this task). |
 | 23 | Pure 15m anomaly analytics core and offline CLI: aligned aggregation, OI%, PX%, classic/robust Z, percentile, coverage, deterministic tests; no runtime or Telegram change. |
-| 24 | Implemented: pure eligibility, deterministic ranking, NEW(14h), restart-reconstructible history, read-only candidate CLI and tests; no runtime or Telegram change. |
-| 25 | Runtime shadow integration with timing/coverage/baseline/skip diagnostics and no Telegram; existing 20m TOP remains production. |
+| 24 | Implemented: pure eligibility, deterministic ranking, NEW(12h), restart-reconstructible history, read-only candidate CLI and tests; no runtime or Telegram change. |
+| 25 | Implemented: opt-in live incremental runtime, diagnostics, staging Telegram report, and independent legacy 20m schedule gate; safe defaults retain production behavior. |
 | 26 | Production cutover: replace 20m TOP, preserve 5m IMPULSE and ALL/PROP routing, and introduce final format/NEW marker. |
 | 27 | Live stabilization and final documentation cleanup; validate timing, duplicates, restart/NEW behavior, Z ordering, routing, and CoinGlass-friendly alignment; only then describe 15m as current in README. |
 
@@ -271,9 +271,9 @@ no rank. The candidate result retains the complete Task 23 anomaly result and
 adds eligibility, rank, NEW and history-quality diagnostics.
 
 NEW uses the same aligned valid OI15% observations and threshold. For a current
-eligible interval T, prior eligibility is tested in `[T - 14h, T)`: the lower
+eligible interval T, prior eligibility is tested in `[T - 12h, T)`: the lower
 boundary is included and T is excluded. Thus an eligible appearance precisely
-14 hours earlier makes NEW false; one at 14h15m does not. NEW is independent of
+12 hours earlier makes NEW false; one at 12h15m does not. NEW is independent of
 historical Z, rank, price, robust Z, percentile and visible TOP-N rows.
 
 `EligibilityHistory` is an in-memory, thread-independent index of valid and
@@ -283,12 +283,11 @@ inclusive lookback boundary. Task 25 can reconstruct it from the bounded SQLite
 analysis history after a restart, decide the current interval before registering
 that interval, then retain it in memory. No permanent NEW-state file is used.
 
-The index reports valid interval count, expected count (56 at 14 hours),
-coverage ratio, prior eligible count and last eligible start. Sparse history does
-not suppress a NEW result, but its coverage is visible. If there is no prior
-valid telemetry at all for the symbol, or only the current interval exists,
-`is_new` is `None` with `history_unavailable`; False is reserved for a prior
-eligible appearance or an ineligible current result. Historical invalid/missing
+The index reports valid interval count, expected count (48 at 12 hours),
+coverage ratio, prior eligible count and last eligible start. Exactly 48/48 valid prior intervals with no eligible prior are required for
+`is_new=True`. With fewer than 48 and no known eligible prior, `is_new=None`
+with `incomplete_new_history`; a known eligible prior conclusively yields False
+even if unrelated intervals are missing. An ineligible current is also False. Historical invalid/missing
 intervals never qualify and are never fabricated.
 
 `tools/oi_anomaly_15m_candidates.py` reuses Task 23's single bounded aligned
@@ -310,3 +309,21 @@ The following remains deferred, not cancelled, and has no new task number:
 - 60m/120m product decision.
 - Production threshold tuning and negative-impulse decision.
 - Operational-hardening work.
+
+## Task 25 live runtime and Telegram contract
+
+Task 25 implements an opt-in, single-worker runtime over the Task 21 SQLite
+telemetry. Startup performs one bounded bootstrap, establishes (without
+publishing) the latest complete closed interval, and reconstructs both the 14-day
+Z baseline and exact aligned 12-hour NEW coverage. Steady state reads one new
+15m interval at a time; it scores before appending current data, prunes bounded
+memory, retries incomplete/failed analysis, and never bridges endpoints across a
+downtime gap. Publication failure is isolated and does not roll back a successful
+analytics result.
+
+The report heading is `📊 OI ANOMALY · 15m`; rows are
+`Z | OI% | PX% | Ticker`. `🆕` is shown only for confirmed NEW, `⏳` for
+incomplete NEW history, and no marker for confirmed NOT NEW. Any report with a
+special marker includes `🆕 NEW · ⏳ NEW history incomplete`. Marker state does
+not participate in eligibility or ranking. Long reports split deterministically
+at row boundaries without dropping rows.

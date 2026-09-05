@@ -13,7 +13,7 @@
 - Task 20: completed collector snapshot implemented for production 20m TOP.
 - Task 21: durable long-term OI + Price research telemetry implemented.
 - Task 23: analytics core implemented with a read-only offline CLI.
-- Task 24: pure 15m eligibility, Z-first ranking and restart-reconstructible NEW(14h)
+- Task 24: pure 15m eligibility, Z-first ranking and restart-reconstructible NEW(12h)
   semantics implemented. Production remains 5m IMPULSE + 20m TOP; 15m has no
   runtime wiring, Telegram report or permanent NEW state file.
 
@@ -84,10 +84,10 @@ replacement of 20m TOP by UTC-aligned 15m OI ANOMALY TOP. See
 - Task 22 — product/specification documentation rebaseline (this task).
 - Task 23 — analytics core implemented: aligned aggregation, classic/robust Z,
   percentile, coverage, read-only SQLite CLI and CSV; no runtime/Telegram changes.
-- Task 24 — implemented: eligibility, deterministic Z-first ranking, NEW(14h)
+- Task 24 — implemented: eligibility, deterministic Z-first ranking, NEW(12h)
   history reconstruction, read-only candidate CLI and CSV; no runtime/Telegram changes.
-- Task 25 — runtime shadow integration only; existing 20m TOP stays production
-  and no 15m Telegram messages are sent.
+- Task 25 — implemented opt-in live 15m runtime and staging Telegram publication;
+  safe defaults leave existing 20m TOP production behavior unchanged.
 - Task 26 — production cutover: replace 20m TOP with 15m anomaly TOP while
   preserving 5m IMPULSE and ALL/PROP routing.
 - Task 27 — live stabilization and final documentation cleanup; only then may
@@ -103,3 +103,25 @@ replacement of 20m TOP by UTC-aligned 15m OI ANOMALY TOP. See
   tablet Git workflow, Termux:Boot/autostart, and one-instance health).
 Production thresholds remain unchanged until research telemetry provides
 sufficient evidence.
+
+## Task 25 status
+
+Implemented the live 15m anomaly runtime and staging Telegram publication behind
+safe-off feature flags. Runtime startup is bounded/read-only, establishes a
+non-published reference, and steady state is incremental, retryable and
+exactly-once per successful interval. NEW is now locked to 12h: `True` requires
+48/48 valid aligned prior intervals and no eligible prior; incomplete quiet
+history is `None` and displays `⏳`; any known eligible prior is `False`.
+The default legacy 20m schedule remains enabled and can be independently omitted
+with `ROLLING_OI_20M_TOP_ENABLED=0`. No secrets or machine identities are
+hard-coded.
+Telegram-disabled laptop soak on 2026-09-05 bootstrapped 8,908 aligned
+observations across 524 historical symbols in about 0.72 seconds. It retried the
+pre-start incomplete interval, then processed `10:30-10:45 UTC` once from 1,566
+source rows: 522 valid observations, 6 eligible candidates, all retained with
+`Z=N/A` and `is_new=None` because fresh 12h coverage was incomplete. Repeated
+wakeups did not duplicate the interval. The legacy 20m scheduler was disabled
+for the soak while the implementation remained available. No real Telegram
+message was sent; manual staging publication is intentionally left to the user.
+The process was stopped after the successful interval; deterministic runtime
+shutdown is covered by the automated suite.

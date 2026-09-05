@@ -142,6 +142,30 @@ class Settings:
         default_factory=lambda: _get_float("RESEARCH_TELEMETRY_RETENTION_DAYS", "14")
     )
 
+    oi_anomaly_15m_enabled: bool = field(
+        default_factory=lambda: _get_bool("OI_ANOMALY_15M_ENABLED", "0")
+    )
+    oi_anomaly_15m_telegram_enabled: bool = field(
+        default_factory=lambda: _get_bool("OI_ANOMALY_15M_TELEGRAM_ENABLED", "0")
+    )
+    oi_anomaly_15m_baseline_days: int = field(
+        default_factory=lambda: _get_int("OI_ANOMALY_15M_BASELINE_DAYS", "14")
+    )
+    oi_anomaly_15m_min_history: int = field(
+        default_factory=lambda: _get_int("OI_ANOMALY_15M_MIN_HISTORY", "96")
+    )
+    oi_anomaly_15m_eligibility_pct: float = field(
+        default_factory=lambda: _get_float("OI_ANOMALY_15M_ELIGIBILITY_PCT", "1.0")
+    )
+    oi_anomaly_15m_new_lookback_hours: float = field(
+        default_factory=lambda: _get_float("OI_ANOMALY_15M_NEW_LOOKBACK_HOURS", "12")
+    )
+    oi_anomaly_15m_log_top_n: int = field(
+        default_factory=lambda: _get_int("OI_ANOMALY_15M_LOG_TOP_N", "20")
+    )
+    rolling_oi_20m_top_enabled: bool = field(
+        default_factory=lambda: _get_bool("ROLLING_OI_20M_TOP_ENABLED", "1")
+    )
     max_tg_len: int = 4096
 
     def validate(self) -> None:
@@ -157,6 +181,42 @@ class Settings:
         if missing:
             raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
 
+        anomaly_invalid = []
+        if self.oi_anomaly_15m_telegram_enabled and not self.oi_anomaly_15m_enabled:
+            anomaly_invalid.append(
+                "OI_ANOMALY_15M_TELEGRAM_ENABLED requires OI_ANOMALY_15M_ENABLED"
+            )
+        if self.oi_anomaly_15m_telegram_enabled and not self.telegram_publish_enabled:
+            anomaly_invalid.append(
+                "OI_ANOMALY_15M_TELEGRAM_ENABLED requires TELEGRAM_PUBLISH_ENABLED"
+            )
+        if self.oi_anomaly_15m_enabled:
+            if (
+                not self.rolling_oi_shadow_enabled
+                or not self.research_telemetry_enabled
+            ):
+                anomaly_invalid.append(
+                    "OI_ANOMALY_15M_ENABLED requires rolling shadow and research telemetry"
+                )
+            if self.oi_anomaly_15m_baseline_days < 1:
+                anomaly_invalid.append("OI_ANOMALY_15M_BASELINE_DAYS must be >= 1")
+            if self.oi_anomaly_15m_min_history < 1:
+                anomaly_invalid.append("OI_ANOMALY_15M_MIN_HISTORY must be >= 1")
+            if (
+                not math.isfinite(self.oi_anomaly_15m_eligibility_pct)
+                or self.oi_anomaly_15m_eligibility_pct <= 0
+            ):
+                anomaly_invalid.append(
+                    "OI_ANOMALY_15M_ELIGIBILITY_PCT must be finite and > 0"
+                )
+            if self.oi_anomaly_15m_new_lookback_hours != 12:
+                anomaly_invalid.append("OI_ANOMALY_15M_NEW_LOOKBACK_HOURS must be 12")
+            if self.oi_anomaly_15m_log_top_n < 0:
+                anomaly_invalid.append("OI_ANOMALY_15M_LOG_TOP_N must be >= 0")
+        if anomaly_invalid:
+            raise RuntimeError(
+                "Invalid 15m OI anomaly config: " + "; ".join(anomaly_invalid)
+            )
         if self.rolling_oi_shadow_enabled:
             invalid = []
             if self.rolling_oi_cadence_seconds <= 0:

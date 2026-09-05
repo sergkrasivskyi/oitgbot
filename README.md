@@ -273,9 +273,9 @@ existing 5m IMPULSE remains unchanged. The full target contract is in
 1. **Task 22:** documentation/specification rebaseline (this task).
 2. **Task 23:** pure 15m anomaly analytics core + offline CLI, with no runtime
    or Telegram changes.
-3. **Task 24:** NEW(14h), ranking, and eligibility layer.
-4. **Task 25:** runtime shadow integration; 20m TOP remains production and 15m
-   sends no Telegram messages.
+3. **Task 24:** NEW(12h), ranking, and eligibility layer.
+4. **Task 25:** implemented opt-in live runtime and staging Telegram publication;
+   safe defaults keep 20m TOP production behavior unchanged.
 5. **Task 26:** production cutover from 20m TOP to 15m anomaly TOP.
 6. **Task 27:** live stabilization and final documentation cleanup.
 
@@ -536,3 +536,45 @@ docker compose down
 
 ```
 ```
+
+## Live 15m OI anomaly staging (Task 25)
+
+The live analyzer is production-safe and disabled by default. It bootstraps one
+bounded 14-day SQLite snapshot, establishes the latest closed interval as its
+startup reference, then reads only each newly closed UTC-aligned 15m interval.
+It never replays historical Telegram reports and makes no additional Binance
+requests. Incomplete current data and analysis errors are retried; successful
+intervals are processed at most once per running process. Telegram transport
+errors are isolated from subsequent analytics.
+
+Example laptop staging configuration (use the existing test bot/channel values):
+
+```dotenv
+TELEGRAM_PUBLISH_ENABLED=1
+OI_ANOMALY_15M_ENABLED=1
+OI_ANOMALY_15M_TELEGRAM_ENABLED=1
+ROLLING_OI_20M_TOP_ENABLED=0
+RESEARCH_TELEMETRY_ENABLED=1
+RESEARCH_TELEMETRY_DB_PATH=state/oi_research_test.sqlite3
+RESEARCH_TELEMETRY_RETENTION_DAYS=14
+OI_ANOMALY_15M_BASELINE_DAYS=14
+OI_ANOMALY_15M_MIN_HISTORY=96
+OI_ANOMALY_15M_ELIGIBILITY_PCT=1.0
+OI_ANOMALY_15M_NEW_LOOKBACK_HOURS=12
+OI_ANOMALY_15M_LOG_TOP_N=20
+```
+
+Defaults are `OI_ANOMALY_15M_ENABLED=0`,
+`OI_ANOMALY_15M_TELEGRAM_ENABLED=0`, and
+`ROLLING_OI_20M_TOP_ENABLED=1`, so existing production behavior is unchanged.
+With only the analyzer enabled it operates live in log-only shadow mode.
+Disabling the 20m TOP flag prevents that scheduler job from being registered.
+
+NEW uses exactly `[T - 12h, T)`. A positive `🆕` claim requires all 48/48
+prior aligned observations to be valid and none eligible. `⏳` means no prior
+eligible interval was observed but history is incomplete; the candidate remains
+visible and the marker is a coverage status, not a prediction. A known prior
+eligible interval is conclusively not NEW even when other history is missing.
+Reports use `Z | OI% | PX% | Ticker`, keep all eligible rows in deterministic
+rank order, split only at row boundaries, and route the existing PROP subset.
+`SEND_EMPTY_REPORTS=0` suppresses empty anomaly reports to avoid staging spam.

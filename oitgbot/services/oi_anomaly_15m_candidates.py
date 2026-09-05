@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from .oi_anomaly_15m import AnomalyResult, Observation, utc
 
 DEFAULT_ELIGIBILITY_THRESHOLD_PCT = 1.0
-DEFAULT_NEW_LOOKBACK_HOURS = 14
+DEFAULT_NEW_LOOKBACK_HOURS = 12
 EXPECTED_INTERVALS_PER_HOUR = 4
 
 
@@ -135,19 +135,7 @@ class EligibilityHistory:
         )
         expected = _expected_interval_count(self.lookback_hours)
         coverage = len(valid) / expected
-        if not valid and not any(
-            start < current for start in self._valid_starts.get(symbol, ())
-        ):
-            return NewHistoryStatus(
-                None,
-                "history_unavailable",
-                self.lookback_hours,
-                0,
-                None,
-                0,
-                expected,
-                coverage,
-            )
+
         if eligible:
             return NewHistoryStatus(
                 False,
@@ -159,9 +147,10 @@ class EligibilityHistory:
                 expected,
                 coverage,
             )
+        complete = len(valid) == expected
         return NewHistoryStatus(
-            True,
-            "no_previous_eligible_interval",
+            True if complete else None,
+            "no_previous_eligible_interval" if complete else "incomplete_new_history",
             self.lookback_hours,
             0,
             None,

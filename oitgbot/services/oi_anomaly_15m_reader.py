@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from itertools import groupby
 from pathlib import Path
@@ -163,3 +164,37 @@ def analyze_database_with_observations(
                 )
             )
     return start, tuple(sorted(results, key=research_sort_key)), tuple(all_observations)
+
+
+@dataclass(frozen=True, slots=True)
+class IntervalSnapshot:
+    interval_start_utc: datetime
+    source_rows: tuple[SourceBar, ...]
+    observations: tuple
+    is_complete: bool
+
+
+def read_interval_snapshot(
+    path: str | Path,
+    interval_start_utc: datetime,
+    *,
+    symbols: tuple[str, ...] = (),
+) -> IntervalSnapshot:
+    """Read one coherent WAL snapshot for incremental live processing."""
+    start = utc(interval_start_utc)
+    if align_15m(start) != start:
+        raise ValueError("interval start must be aligned to 15m")
+    symbols = tuple(sorted({symbol.upper() for symbol in symbols}))
+    with connect_read_only(path) as connection:
+        bars = tuple(read_bars(connection, start, start + INTERVAL, symbols))
+    grouped = {symbol: [] for symbol in symbols}
+    for bar in bars:
+        grouped.setdefault(bar.symbol, []).append(bar)
+    observations = tuple(
+        aggregate_interval(symbol, start, grouped[symbol]) for symbol in sorted(grouped)
+    )
+    last_bucket = start + timedelta(minutes=10)
+    complete = any(
+        bar.bucket_start_utc == last_bucket and bar.is_closed for bar in bars
+    )
+    return IntervalSnapshot(start, bars, observations, complete)
