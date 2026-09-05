@@ -1,7 +1,7 @@
 # 15m OI Anomaly TOP — approved product specification
 
-Status: approved target for Tasks 23–27; **not implemented or deployed** by
-Task 22.
+Status: Task 23 pure analytics and offline CLI implemented. Production 15m
+remains an approved target; no runtime integration or Telegram 15m report yet.
 
 ## Scope and current production
 
@@ -16,8 +16,8 @@ Current production remains unchanged:
 - 60m and 120m are observational only.
 
 This specification defines the approved next target, not current behavior. It
-does not authorize a calculation, scheduler, Telegram, configuration, test, or
-runtime change. The 5m IMPULSE path is explicitly out of scope and must remain
+was documentation-only in Task 22. Task 23 adds offline analytics and tests.
+The 5m IMPULSE path is explicitly out of scope and must remain
 unchanged.
 
 ## Target architecture and interval identity
@@ -166,7 +166,8 @@ profitability.
 
 - Exact cache/service boundary and publication trigger after an interval closes.
 - Efficient 14-day bootstrap and incremental-update strategy.
-- Exact small-gap policy that maintains no-look-ahead and consistent semantics.
+- Future operational quality thresholds; strict missing-bucket exclusion in
+  Task 23 is resolved below.
 - Operational diagnostics and coverage thresholds for shadow validation.
 
 ## Rebaselined roadmap
@@ -180,7 +181,80 @@ profitability.
 | 26 | Production cutover: replace 20m TOP, preserve 5m IMPULSE and ALL/PROP routing, and introduce final format/NEW marker. |
 | 27 | Live stabilization and final documentation cleanup; validate timing, duplicates, restart/NEW behavior, Z ordering, routing, and CoinGlass-friendly alignment; only then describe 15m as current in README. |
 
-## Deferred backlog
+## Task 23 implementation details (offline research only)
+
+`oitgbot/services/oi_anomaly_15m.py` contains immutable read/observation/result
+models and pure aggregation/statistics. `oi_anomaly_15m_reader.py` is the SQLite
+adapter; `tools/oi_anomaly_15m.py` handles terminal presentation and CSV export.
+These modules are not imported by production runtime. No new dependencies,
+market-data requests, persistent cache, eligibility layer or NEW state were added.
+
+For `[T,T+15m)`, exactly three closed rows at T, T+5m and T+10m are required.
+OI15% is `100 * (third.oi_close - first.oi_open) / first.oi_open`.
+PX15% is `100 * (third.price_close - first.price_open) / first.price_open`.
+These are sampled first-open/last-close returns within the aligned interval,
+not interpolated exact-boundary prices or chained 5m returns. Both current and
+historical intervals use the same aggregator. Required endpoints must be finite
+and positive. Missing, duplicate, misaligned or open constituents invalidate that
+interval. Invalid current observations expose a reason and unavailable metrics;
+invalid historical observations reduce the baseline count only. No interpolation,
+gap bridging, forward fill or backfill is performed.
+
+Task 23 requires both OI and price endpoints for a complete research observation,
+as specified by its input contract. This is data validity, not price-direction
+eligibility: no price change sign or magnitude is filtered. Counts such as OI
+9/10/11 or low restart counts remain valid. Count totals/minima and constituent
+closed-bucket coverage (0 to 1) accompany the independent validity/reason fields.
+
+For current start T, include same-symbol valid observations with starts in
+`[T - baseline_days, T)`, default 14 calendar days (1344 possible intervals).
+Current/future intervals are excluded; non-finite historical OI returns are
+excluded. Duplicate baseline identities raise an explicit error. Coverage is
+`baseline_count / (96 * baseline_days)`, with oldest/newest starts and raw mean,
+population standard deviation, median and MAD also returned.
+
+Classic Z is `(x - mean) / sigma`, with `sigma = statistics.pstdev(history)`
+(population divisor N). Robust Z is `0.6744897501960817 * (x - median) / MAD`,
+where MAD is the median absolute deviation. Both scores require 96 prior valid
+observations by default; research CLI overrides do not change production defaults.
+Shared absolute epsilon is `1e-12` percentage points: sigma or MAD <= epsilon
+makes the respective score unavailable. Non-finite computed scores are unavailable
+with a reason. No numeric sentinel or infinity stands in for an unavailable score.
+
+Percentile is `100 * (below + 0.5 * equal) / N`. Comparisons use exact Python
+float `<` and `==`, without rounding or approximate tie tolerance. It is available
+for any nonempty valid baseline, even below 96; an empty baseline yields N/A.
+Robust Z and percentile remain research-only metrics.
+
+The reader uses SQLite `mode=ro`, `query_only=ON` and one read transaction for a
+consistent snapshot including committed WAL records; it never uses `immutable=1`.
+With `--as-of`, the selected interval starts at `floor15(as_of) - 15m` and is
+reported unavailable if incomplete, without silently falling back to an older
+interval. With no timestamp, it streams newest-first interval groups, bounded
+above by the current closed UTC boundary, and stops at the first mathematically
+complete observation among the requested symbols. This does not certify full
+market coverage for a production report. Empty data yields an explicit message.
+
+After discovery, one bounded SQL read covers only the requested current interval
+and its baseline. Processing streams by symbol, retaining one symbol's history
+at a time; there is no per-symbol full-database query. Latest-interval discovery
+can scan older groups if recent data is invalid. The existing bucket index serves
+time-range reads; the schema and writer are untouched.
+
+```bash
+python -m tools.oi_anomaly_15m --db state/oi_research.sqlite3 --top 30
+python -m tools.oi_anomaly_15m --db state/oi_research.sqlite3 --as-of 2026-09-05T10:15:00Z --symbol BTCUSDT
+python -m tools.oi_anomaly_15m --db state/oi_research.sqlite3 --baseline-days 14 --min-history 96 --output anomaly.csv
+```
+
+Terminal research sorting is finite classic Z descending, then OI descending,
+then lexical symbol; N/A follows finite Z. No +1% production eligibility filter
+is implemented. `--top` limits terminal rows only. CSV exports all results and
+all observation, quality, score and baseline fields, with empty cells for None.
+CSV exclusively creates a new file and refuses to overwrite existing files,
+including the database or WAL. No generated research artifacts belong in Git.
+
+## Deferred backlog (unchanged)
 
 The following remains deferred, not cancelled, and has no new task number:
 
