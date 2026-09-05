@@ -147,10 +147,10 @@ def test_new_boundaries_and_current_interval_exclusion():
     exactly = observation(2, start=NOW - timedelta(hours=12))
     recent = observation(2, start=NOW - timedelta(minutes=15))
     current_observation = current.observation
-    assert candidate_results((current,), (old,))[0].is_new is None
+    assert candidate_results((current,), (old,))[0].is_new is True
     assert candidate_results((current,), (exactly,))[0].is_new is False
     assert candidate_results((current,), (recent,))[0].is_new is False
-    assert candidate_results((current,), (current_observation,))[0].is_new is None
+    assert candidate_results((current,), (current_observation,))[0].is_new is True
 
 
 def test_historical_ineligible_price_z_and_rank_do_not_affect_new():
@@ -159,21 +159,21 @@ def test_historical_ineligible_price_z_and_rank_do_not_affect_new():
         observation(-5, start=NOW - timedelta(minutes=30), price_change=-99),
     )
     candidate = candidate_results((anomaly(2, z=None),), history)[0]
-    assert candidate.is_new is None
+    assert candidate.is_new is True
     assert candidate.previous_eligible_count == 0
     assert candidate.history_valid_interval_count == 2
 
 
-def test_missing_history_coverage_unknown_and_partial_history_true():
+def test_missing_history_coverage_does_not_gate_new():
     current = anomaly(2)
     unknown = candidate_results((current,))[0]
-    assert unknown.is_new is None
-    assert unknown.new_status_reason == "incomplete_new_history"
+    assert unknown.is_new is True
+    assert unknown.new_status_reason == "no_previous_eligible_interval"
     assert unknown.history_coverage_ratio == 0
     partial = candidate_results(
         (current,), (observation(0, start=NOW - timedelta(minutes=30)),)
     )[0]
-    assert partial.is_new is None
+    assert partial.is_new is True
     assert partial.history_valid_interval_count == 1
     assert partial.history_expected_interval_count == 48
     assert partial.history_coverage_ratio == pytest.approx(1 / 48)
@@ -189,7 +189,7 @@ def test_symbols_are_isolated_and_reconstruction_equals_incremental_history():
     for item in historical:
         live.register(item)
     uninterrupted = build_candidates((anomaly(2),), live)[0]
-    assert rebuilt.is_new is None
+    assert rebuilt.is_new is True
     assert rebuilt == uninterrupted
 
 

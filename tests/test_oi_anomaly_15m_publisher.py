@@ -7,7 +7,7 @@ from oitgbot.services.oi_anomaly_15m_publisher import OIAnomaly15mPublisher
 from oitgbot.services.report_formatter import ReportFormatter
 
 
-def candidate(symbol: str, *, is_new=None, rank=1):
+def candidate(symbol: str, *, is_new=False, rank=1):
     return SimpleNamespace(
         symbol=symbol,
         is_eligible=True,
@@ -31,7 +31,7 @@ class Sender:
         return True
 
 
-def test_all_and_prop_routing_keeps_incomplete_new_candidate_visible():
+def test_all_and_prop_routing_preserves_new_marker_state():
     sender = Sender()
     publisher = OIAnomaly15mPublisher(
         sender,
@@ -45,15 +45,15 @@ def test_all_and_prop_routing_keeps_incomplete_new_candidate_visible():
     assert len(sender.calls) == 2
     assert "ALLUSDT" in sender.calls[0][1] and "PROPUSDT" in sender.calls[0][1]
     assert "ALLUSDT" not in sender.calls[1][1] and "PROPUSDT" in sender.calls[1][1]
-    assert "⏳" in sender.calls[1][1]
+    assert "⏳" not in sender.calls[1][1]
+    assert "🆕" not in sender.calls[1][1]
     assert sender.calls[0][2]["report_type"] == "oi_anomaly_15m"
 
 
-def test_legend_appears_for_each_special_marker_individually():
+def test_legend_appears_only_when_a_new_marker_exists():
     formatter = ReportFormatter()
     confirmed = formatter.format_oi_anomaly_15m((candidate("NEWUSDT", is_new=True),))
-    incomplete = formatter.format_oi_anomaly_15m((candidate("WAITUSDT", is_new=None),))
-    assert "🆕 NEW · ⏳ NEW history incomplete" in confirmed
-    assert "🆕 NEW · ⏳ NEW history incomplete" in incomplete
-    assert "⏳ N/A | +1.50% | -0.25%" in incomplete
-    assert "UNKNOWN" not in incomplete and "MAYBE NEW" not in incomplete
+    prior = formatter.format_oi_anomaly_15m((candidate("OLDUSDT"),))
+    assert "🆕 NEW" in confirmed
+    assert "🆕 NEW" not in prior
+    assert "⏳" not in confirmed and "⏳" not in prior

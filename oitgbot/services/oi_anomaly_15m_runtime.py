@@ -185,7 +185,7 @@ class OIAnomaly15mRuntime:
             "OI_ANOMALY_15M_INTERVAL status=processed interval_start_utc=%s "
             "interval_end_utc=%s source_rows=%d universe=%d valid_current=%d "
             "invalid_or_missing=%d eligible=%d new_true=%d new_false=%d "
-            "new_incomplete=%d z_available=%d z_na=%d elapsed_ms=%.1f",
+            "z_available=%d z_na=%d elapsed_ms=%.1f",
             target.isoformat(),
             (target + INTERVAL).isoformat(),
             len(snapshot.source_rows),
@@ -195,7 +195,6 @@ class OIAnomaly15mRuntime:
             len(eligible),
             sum(candidate.is_new is True for candidate in eligible),
             sum(candidate.is_new is False for candidate in eligible),
-            sum(candidate.is_new is None for candidate in eligible),
             sum(candidate.z_score is not None for candidate in eligible),
             sum(candidate.z_score is None for candidate in eligible),
             (time.perf_counter() - started) * 1000,

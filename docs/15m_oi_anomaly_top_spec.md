@@ -1,186 +1,58 @@
-# 15m OI Anomaly TOP — approved product specification
+# 15m OI Anomaly — production product specification
 
-Status: Task 23 pure analytics and offline CLI implemented. Production 15m
-now has an opt-in live runtime and staging Telegram report; production defaults remain unchanged.
+Status: production cutover was manually completed and validated on 2026-09-05
+using commit `d2aa19735f7597cc7d518cf45526f9de4216fa9e`.
 
-## Scope and current production
+## Current production
 
-Current production remains unchanged:
-
-- **5m IMPULSE:** rolling current OI quantity, evaluated on collector cycles;
-  ±5% trigger, 3% re-arm, persistent per-symbol signal state, and existing
-  ALL/PROP Telegram routing.
-- **20m TOP:** positive rolling current OI quantity changes of at least +1%,
-  scheduled at minutes 0/20/40, ranked by OI%, with PX% context and existing
-  ALL/PROP routing.
-- 60m and 120m are observational only.
-
-This specification defines the approved next target, not current behavior. It
-was documentation-only in Task 22. Task 23 adds offline analytics and tests.
-The 5m IMPULSE path is explicitly out of scope and must remain
-unchanged.
-
-## Target architecture and interval identity
-
-At final cutover, production will be:
-
-```text
-5m IMPULSE + 15m OI ANOMALY TOP
-```
-
-The 20m TOP is **replaced**, not supplemented. It remains the only TOP report
-until shadow validation is complete; there must be no permanent simultaneous
-production 20m and 15m reports.
-
-The new report uses closed, standard UTC-aligned 15-minute intervals:
-
-```text
-00–15  15–30  30–45  45–00
-10:00:00Z -> 10:15:00Z
-10:15:00Z -> 10:30:00Z
-```
-
-Each report belongs to the interval that has closed. It may publish a few
-seconds after its boundary once complete-universe data is available. Correct
-interval identity and complete-universe data take priority over a fragile
-fixed-second publication target.
-
-## Metrics, eligibility, and ranking
-
-For each symbol and the same aligned closed interval, calculate:
-
-```text
-OI15%  current aligned 15m OI quantity percent change
-PX15%  current aligned 15m price percent change
-Z15    classic same-symbol Z-score of OI15%
-```
-
-OI quantity is the primary OI representation. PX15% is display context only;
-it never gates OI eligibility.
-
-Production-v1 eligibility is inherited from TOP: positive OI only, with
-`OI15% >= +1.0%`. Every eligible symbol participates in eligibility/NEW history
-even if a later presentation limit hides a row.
-
-Order candidates deterministically:
-
-1. finite Z15, descending;
-2. OI15%, descending;
-3. symbol, deterministic lexical order.
-
-Candidates with `Z=N/A` follow all finite-Z candidates. Raw OI% must not become
-the primary ranking metric.
-
-## Classic Z15 baseline
-
-For current `r_current = OI15%`:
-
-```text
-Z15 = (r_current - mean(history)) / population_stddev(history)
-```
-
-`history` contains only valid, closed, aligned 15m OI% observations for the
-same symbol in the trailing 14 days. It excludes the current interval, never
-uses look-ahead, and must use the same 15m aggregation and percent-change
-semantics as `r_current`.
-
-Production v1 uses **population** standard deviation (`sqrt(sum((x-mean)^2)/n)`),
-not sample standard deviation. The baseline is the complete retained rolling
-population available to the product, rather than an estimate of an unobserved
-statistical sample; this also keeps the value deterministic at the minimum
-history threshold.
-
-At least 96 prior valid observations (about 24 hours) are required. With fewer,
-Z15 is `N/A`; the symbol remains eligible and visible according to normal
-ranking. If history has zero or near-zero standard deviation, or any required
-current/baseline value or computed result is NaN/non-finite, Z15 is `N/A` and a
-diagnostic is recorded. Gaps are never imputed: only valid closed source bars
-form valid 15m observations, and insufficient valid history remains `N/A`.
-
-For research only, calculate or preserve a plan to calculate a robust Z-score
-(median/MAD) and the historical percentile of current OI15%. Neither is a v1
-Telegram ranking or display field.
+Production is **5m IMPULSE + 15m OI ANOMALY**. 5m IMPULSE is unchanged. 15m
+uses closed UTC-aligned intervals, positive `OI15% >= +1%` eligibility, classic
+same-symbol trailing-14-day Z15 with at least 96 valid prior observations, and
+finite-Z / OI% / symbol ranking. PX15% is context only. ALL and PROP routing
+are production-validated. The legacy rolling 20m TOP scheduler is disabled in
+production with `ROLLING_OI_20M_TOP_ENABLED=0`; its implementation remains as
+rollback compatibility.
 
 ## NEW marker
 
-Use `🆕` when a symbol is eligible in the current aligned 15m interval and had
-no eligible 15m interval in the preceding 12 hours. Eligibility history means
-all intervals with `OI15% >= +1.0%`, not only visible TOP-N rows; the current
-interval cannot count as its own prior appearance.
+For an eligible current interval T, NEW checks only known eligible occurrences
+for the same symbol in `[T - 12h, T)`. Any known prior eligible occurrence means
+`is_new=False`; otherwise `is_new=True`. The current interval is excluded.
+Missing aligned intervals, restarts, downtime, and coverage below 48/48 never
+turn NEW into an unknown state. Coverage remains diagnostic data only.
 
-Restart behavior must reconstruct the prior 12-hour eligibility history from
-durable research telemetry when required, optionally keeping an in-memory cache
-after startup. A restart must not create a market-wide false NEW storm. Do not
-require a new permanent JSON state file unless later implementation work proves
-one necessary.
+Telegram prefixes NEW rows with `🆕`; non-NEW rows have no marker. If any NEW
+row exists, append `🆕 NEW`; otherwise append no legend. There is no ⏳ marker,
+no `UNKNOWN`, and no coverage-derived suppression of an eligible candidate.
 
-## Data, failure isolation, and target Telegram UX
+## Runtime and data contract
 
-Use existing Task 21 durable closed 5m OI + Price telemetry (14-day retention),
-aggregating it into aligned 15m observations as needed. No new Binance REST
-endpoint, WebSocket, or `openInterestHist` fallback is permitted. Current and
-historical calculations must share identical interval semantics.
+The live runtime uses the existing durable closed 5m OI and price telemetry,
+bootstraps one bounded SQLite history, establishes a non-published startup
+reference, and processes only newly completed intervals. It scores before
+appending current observations, retries incomplete source data, and does not
+replay historic Telegram reports after restart. No new Binance REST request,
+WebSocket, telemetry schema, collector cadence, or market-data subscription is
+introduced.
 
-If data/history is unavailable, the anomaly feature fails safely (for example,
-skip an affected report/row with diagnostics); it must not affect OI collection,
-the mark-price WebSocket, 5m IMPULSE, unrelated Telegram reports, or telemetry
-persistence.
+## Rebaselined history and roadmap
 
-At cutover, the report concept is:
-
-```text
-📊 OI ANOMALY · 15m
-
-Z     OI       PX       SYMBOL
-5.26  +2.14%   +3.82%   🆕 BUSDT
-4.73  +1.31%   +0.94%      XYZUSDT
-1.41  +6.27%   +2.55%      DEFUSDT
-```
-
-Exact monospace spacing is an implementation detail. Semantic display order is
-Z, raw OI change, price change, then symbol. Preserve clickable tickers and
-ALL/PROP routing at final cutover.
-
-## Product motivation
-
-The 5m ±5% IMPULSE remains the fast alert for already-large OI moves. The old
-20m TOP is mainly useful for earlier-stage activity. The 15m anomaly report is
-intended to improve early-stage discovery by comparing a current OI move with
-that symbol's own historical behavior: an OI +3%, Z +5 event may be more unusual
-than OI +6%, Z +1.4. Z-score is not a claim of future price direction or
-profitability.
-
-## Locked decisions
-
-- 20m production TOP is ultimately replaced by 15m; 5m IMPULSE is unchanged.
-- Intervals are standard UTC-aligned closed 15m periods.
-- Initial eligibility is positive `OI15% >= +1.0%`; PX is context only.
-- Classic Z is v1's primary rank, with a 14-day same-symbol history and a
-  minimum of 96 prior observations; current interval is excluded.
-- Population standard deviation is the chosen classic-Z convention.
-- NEW uses a 12-hour lookback across all eligible intervals.
-- Existing closed 5m telemetry is the source: no new market-data requests.
-- Shadow validation precedes cutover; robust Z and percentile are research-only.
-
-## Open implementation questions
-
-- Exact cache/service boundary and publication trigger after an interval closes.
-- Efficient 14-day bootstrap and incremental-update strategy.
-- Future operational quality thresholds; strict missing-bucket exclusion in
-  Task 23 is resolved below.
-- Operational diagnostics and coverage thresholds for shadow validation.
-
-## Rebaselined roadmap
-
-| Task | Scope |
+| Item | Status |
 |---|---|
-| 22 | Product/specification documentation rebaseline (this task). |
-| 23 | Pure 15m anomaly analytics core and offline CLI: aligned aggregation, OI%, PX%, classic/robust Z, percentile, coverage, deterministic tests; no runtime or Telegram change. |
-| 24 | Implemented: pure eligibility, deterministic ranking, NEW(12h), restart-reconstructible history, read-only candidate CLI and tests; no runtime or Telegram change. |
-| 25 | Implemented: opt-in live incremental runtime, diagnostics, staging Telegram report, and independent legacy 20m schedule gate; safe defaults retain production behavior. |
-| 26 | Production cutover: replace 20m TOP, preserve 5m IMPULSE and ALL/PROP routing, and introduce final format/NEW marker. |
-| 27 | Live stabilization and final documentation cleanup; validate timing, duplicates, restart/NEW behavior, Z ordering, routing, and CoinGlass-friendly alignment; only then describe 15m as current in README. |
+| Task 23 | Pure aligned aggregation/statistics and offline CLI. |
+| Task 24 | Eligibility, ranking, and 12h occurrence history. |
+| Task 25 | Opt-in live runtime and staging publication. |
+| 2026-09-05 cutover | `d2aa197` manually promoted and validated in production. |
+| Task 26 | Correct NEW semantics and rebaseline post-cutover documentation. |
+| Task 27 | Production stabilization and observation. |
 
+## Planned research direction: OI Z-SCORE FLASH
+
+FLASH has no task number and is not implemented here. It is a possible 1m
+near-online research direction: positive OI anomaly Z > +3 and negative OI
+anomaly Z < -3; OI% and PX% are context only. It has no BUY/SELL, squeeze, or
+liquidation interpretation. Any future Telegram work requires 1m telemetry,
+shadow validation, and anti-spam trigger/rearm design first.
 ## Task 23 implementation details (offline research only)
 
 `oitgbot/services/oi_anomaly_15m.py` contains immutable read/observation/result
@@ -270,25 +142,7 @@ No price, robust-Z or percentile value participates. Ineligible observations hav
 no rank. The candidate result retains the complete Task 23 anomaly result and
 adds eligibility, rank, NEW and history-quality diagnostics.
 
-NEW uses the same aligned valid OI15% observations and threshold. For a current
-eligible interval T, prior eligibility is tested in `[T - 12h, T)`: the lower
-boundary is included and T is excluded. Thus an eligible appearance precisely
-12 hours earlier makes NEW false; one at 12h15m does not. NEW is independent of
-historical Z, rank, price, robust Z, percentile and visible TOP-N rows.
-
-`EligibilityHistory` is an in-memory, thread-independent index of valid and
-eligible interval starts. It reconstructs from Task 23 aligned observations,
-registers each later closed observation, and prunes starts older than the
-inclusive lookback boundary. Task 25 can reconstruct it from the bounded SQLite
-analysis history after a restart, decide the current interval before registering
-that interval, then retain it in memory. No permanent NEW-state file is used.
-
-The index reports valid interval count, expected count (48 at 12 hours),
-coverage ratio, prior eligible count and last eligible start. Exactly 48/48 valid prior intervals with no eligible prior are required for
-`is_new=True`. With fewer than 48 and no known eligible prior, `is_new=None`
-with `incomplete_new_history`; a known eligible prior conclusively yields False
-even if unrelated intervals are missing. An ineligible current is also False. Historical invalid/missing
-intervals never qualify and are never fabricated.
+NEW uses known same-symbol eligible observations and the 12-hour window `[T - 12h, T)`. A known prior eligible occurrence makes NEW false; no known occurrence makes NEW true. The current interval is excluded. Valid-interval coverage remains a diagnostic and never gates NEW or report visibility.
 
 `tools/oi_anomaly_15m_candidates.py` reuses Task 23's single bounded aligned
 analysis read and SQLite read-only/WAL snapshot. It adds `--eligible-only`,
@@ -310,20 +164,6 @@ The following remains deferred, not cancelled, and has no new task number:
 - Production threshold tuning and negative-impulse decision.
 - Operational-hardening work.
 
-## Task 25 live runtime and Telegram contract
+## Current production note
 
-Task 25 implements an opt-in, single-worker runtime over the Task 21 SQLite
-telemetry. Startup performs one bounded bootstrap, establishes (without
-publishing) the latest complete closed interval, and reconstructs both the 14-day
-Z baseline and exact aligned 12-hour NEW coverage. Steady state reads one new
-15m interval at a time; it scores before appending current data, prunes bounded
-memory, retries incomplete/failed analysis, and never bridges endpoints across a
-downtime gap. Publication failure is isolated and does not roll back a successful
-analytics result.
-
-The report heading is `📊 OI ANOMALY · 15m`; rows are
-`Z | OI% | PX% | Ticker`. `🆕` is shown only for confirmed NEW, `⏳` for
-incomplete NEW history, and no marker for confirmed NOT NEW. Any report with a
-special marker includes `🆕 NEW · ⏳ NEW history incomplete`. Marker state does
-not participate in eligibility or ranking. Long reports split deterministically
-at row boundaries without dropping rows.
+The Task 25 runtime is now operating as production 15m OI ANOMALY after the 2026-09-05 cutover. The legacy 20m implementation is retained only for rollback.

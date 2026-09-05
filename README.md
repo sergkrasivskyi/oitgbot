@@ -1,56 +1,56 @@
-# OI TG Bot (Binance Futures → Telegram)
+# OI TG Bot (Binance Futures в†’ Telegram)
 
-Бот сканує **Binance USDⓈ-M Perpetual (USDT)** ф’ючерси, рахує зміну **Open Interest (OI)** та **ціни**, і публікує звіти в Telegram-канали за розкладом.
+Р‘РѕС‚ СЃРєР°РЅСѓС” **Binance USDв“€-M Perpetual (USDT)** С„вЂ™СЋС‡РµСЂСЃРё, СЂР°С…СѓС” Р·РјС–РЅСѓ **Open Interest (OI)** С‚Р° **С†С–РЅРё**, С– РїСѓР±Р»С–РєСѓС” Р·РІС–С‚Рё РІ Telegram-РєР°РЅР°Р»Рё Р·Р° СЂРѕР·РєР»Р°РґРѕРј.
 
-## Можливості
+## РњРѕР¶Р»РёРІРѕСЃС‚С–
 
-- **OI Binance HH** — “імпульси”: OI за 5 хвилин >= `IMPULSE_THRESHOLD`
-- **OI Binance All** — топ по росту OI за 20 хвилин >= `TOP_THRESHOLD`
-- Формат звіту: `OI% | PX% | Ticker` (тікери клікабельні → Coinglass)
-- Фільтрація інструментів:
+- **OI Binance HH** вЂ” вЂњС–РјРїСѓР»СЊСЃРёвЂќ: OI Р·Р° 5 С…РІРёР»РёРЅ >= `IMPULSE_THRESHOLD`
+- **OI Binance All** вЂ” С‚РѕРї РїРѕ СЂРѕСЃС‚Сѓ OI Р·Р° 20 С…РІРёР»РёРЅ >= `TOP_THRESHOLD`
+- Р¤РѕСЂРјР°С‚ Р·РІС–С‚Сѓ: `OI% | PX% | Ticker` (С‚С–РєРµСЂРё РєР»С–РєР°Р±РµР»СЊРЅС– в†’ Coinglass)
+- Р¤С–Р»СЊС‚СЂР°С†С–СЏ С–РЅСЃС‚СЂСѓРјРµРЅС‚С–РІ:
   - `PERPETUAL`
-  - лише `...USDT`
-  - лише ASCII (без ієрогліфів)
-- Паралельне сканування (ThreadPool) для швидкості
-- Кеш символів (TTL 1 година)
-- Стійкість до нестабільного інтернету:
+  - Р»РёС€Рµ `...USDT`
+  - Р»РёС€Рµ ASCII (Р±РµР· С–С”СЂРѕРіР»С–С„С–РІ)
+- РџР°СЂР°Р»РµР»СЊРЅРµ СЃРєР°РЅСѓРІР°РЅРЅСЏ (ThreadPool) РґР»СЏ С€РІРёРґРєРѕСЃС‚С–
+- РљРµС€ СЃРёРјРІРѕР»С–РІ (TTL 1 РіРѕРґРёРЅР°)
+- РЎС‚С–Р№РєС–СЃС‚СЊ РґРѕ РЅРµСЃС‚Р°Р±С–Р»СЊРЅРѕРіРѕ С–РЅС‚РµСЂРЅРµС‚Сѓ:
   - Binance timeout/retry
   - Telegram timeout + 1 retry
-  - помилки відправки не валять scheduler
+  - РїРѕРјРёР»РєРё РІС–РґРїСЂР°РІРєРё РЅРµ РІР°Р»СЏС‚СЊ scheduler
 
 ---
 
-## Структура проєкту
+## РЎС‚СЂСѓРєС‚СѓСЂР° РїСЂРѕС”РєС‚Сѓ
 
 ```
 
 .
-├─ oitgbot/
-│  ├─ app.py
-│  ├─ config.py
-│  ├─ logger_setup.py
-│  ├─ models.py
-│  ├─ scheduler_jobs.py
-│  ├─ clients/
-│  │  ├─ binance_api.py
-│  │  └─ telegram_sender.py
-│  └─ services/
-│     ├─ oi_scanner.py
-│     └─ report_formatter.py
-├─ run.py
-├─ requirements.txt
-├─ .env
-├─ Dockerfile
-├─ docker-compose.yml
-└─ .dockerignore
+в”њв”Ђ oitgbot/
+в”‚  в”њв”Ђ app.py
+в”‚  в”њв”Ђ config.py
+в”‚  в”њв”Ђ logger_setup.py
+в”‚  в”њв”Ђ models.py
+в”‚  в”њв”Ђ scheduler_jobs.py
+в”‚  в”њв”Ђ clients/
+в”‚  в”‚  в”њв”Ђ binance_api.py
+в”‚  в”‚  в””в”Ђ telegram_sender.py
+в”‚  в””в”Ђ services/
+в”‚     в”њв”Ђ oi_scanner.py
+в”‚     в””в”Ђ report_formatter.py
+в”њв”Ђ run.py
+в”њв”Ђ requirements.txt
+в”њв”Ђ .env
+в”њв”Ђ Dockerfile
+в”њв”Ђ docker-compose.yml
+в””в”Ђ .dockerignore
 
 ````
 
 ---
 
-## Налаштування `.env`
+## РќР°Р»Р°С€С‚СѓРІР°РЅРЅСЏ `.env`
 
-Створи/онови файл `.env` в корені проєкту:
+РЎС‚РІРѕСЂРё/РѕРЅРѕРІРё С„Р°Р№Р» `.env` РІ РєРѕСЂРµРЅС– РїСЂРѕС”РєС‚Сѓ:
 
 ```env
 BOT_TOKEN=your_telegram_bot_token
@@ -58,16 +58,16 @@ ALL_CHANNEL_ID=<your_all_channel_id>
 PROP_CHANNEL_ID=<your_prop_channel_id>
 TELEGRAM_PUBLISH_ENABLED=1
 
-# Список "обраних" символів для другого каналу (опційно)
+# РЎРїРёСЃРѕРє "РѕР±СЂР°РЅРёС…" СЃРёРјРІРѕР»С–РІ РґР»СЏ РґСЂСѓРіРѕРіРѕ РєР°РЅР°Р»Сѓ (РѕРїС†С–Р№РЅРѕ)
 PROP_SYMBOLS=BTCUSDT,ETHUSDT,SOLUSDT
 
 IMPULSE_THRESHOLD=5.0
 TOP_THRESHOLD=1.0
 
-# Порожні звіти (1 = надсилати, 0 = не надсилати)
+# РџРѕСЂРѕР¶РЅС– Р·РІС–С‚Рё (1 = РЅР°РґСЃРёР»Р°С‚Рё, 0 = РЅРµ РЅР°РґСЃРёР»Р°С‚Рё)
 SEND_EMPTY_REPORTS=0
 
-# Якщо імпульсів нема, можна слати fallback TOP-N за OI_5m
+# РЇРєС‰Рѕ С–РјРїСѓР»СЊСЃС–РІ РЅРµРјР°, РјРѕР¶РЅР° СЃР»Р°С‚Рё fallback TOP-N Р·Р° OI_5m
 SHOW_TOP_WHEN_EMPTY=0
 TOP_WHEN_EMPTY_N=10
 
@@ -82,7 +82,7 @@ BINANCE_BASE_URL=https://fapi.binance.com
 HTTP_TIMEOUT=5
 HTTP_RETRIES=1
 
-# Rolling OI runtime (production 5m and 20m; longer windows observational)
+# Rolling OI runtime (production 5m, live 15m, and legacy 20m rollback)
 ROLLING_OI_SHADOW_ENABLED=1
 ROLLING_OI_CADENCE_SECONDS=30
 ROLLING_OI_WORKERS=20
@@ -98,6 +98,7 @@ ROLLING_OI_SIGNAL_STATE_TTL_MINUTES=15
 ROLLING_OI_20M_OBSERVATION_PCT=1
 ROLLING_OI_60M_OBSERVATION_PCT=3
 ROLLING_OI_120M_OBSERVATION_PCT=4
+ROLLING_OI_20M_TOP_ENABLED=0
 
 # Durable LONG research layer (enabled by default)
 RESEARCH_TELEMETRY_ENABLED=1
@@ -132,7 +133,7 @@ and still warms naturally.
 The production and research paths are deliberately independent:
 
 ```text
-FAST: 30s RollingOIStore -> 5m IMPULSE / 20m completed TOP / 60m+120m shadow
+FAST: 30s RollingOIStore -> 5m IMPULSE / live 15m OI ANOMALY / 60m+120m shadow
 LONG: UTC 5m research bars -> SQLite -> offline 1h/2h/6h/12h/24h/48h/72h research
 ```
 
@@ -210,19 +211,19 @@ Binance Current OI REST (~30s)
               |
               v
         RollingOIStore
-             / \
-            /   \
-          5m    20m
-           |      |
-       IMPULSE    TOP
-        5%/3%     >=1%
-           |      |
-      immediate   00/20/40 @ second 10
-           |      |
-           +-- Telegram --+
+             / \\
+            /   \\
+          5m             15m
+           |               |
+       IMPULSE       OI ANOMALY
+        5%/3%     OI15 >= +1%, Z15
+           |               |
+      immediate    closed UTC intervals
+           |               |
+           +----- Telegram ALL/PROP -----+
 ```
 
-The production 20m TOP is an in-memory rolling quantity ranking. After each
+The legacy 20m TOP implementation is an in-memory rolling quantity ranking; its scheduler is disabled in current production and retained for rollback. After each
 fully successful collector cycle, the rolling runtime atomically publishes an
 immutable completed-cycle TOP snapshot. The scheduled TOP job reads only that
 cached snapshot, so a collector cycle still in progress cannot expose a partial
@@ -230,16 +231,17 @@ universe. Partial, failed, skipped, or timed-out cycles retain the previous good
 snapshot. Missing and stale snapshots are skipped safely using the existing
 rolling observation freshness limit.
 
-TOP includes symbols at `TOP_THRESHOLD` (+1% by default), sorts them descending,
+When enabled only for rollback, TOP includes symbols at `TOP_THRESHOLD` (+1% by default), sorts them descending,
 and retains ALL/PROP delivery. Its PX% value comes from existing rolling price
 context and renders as `NA` when unavailable; price never gates an OI candidate.
 A cold restart requires a natural approximately 20-minute warm-up. During
 warm-up the scheduled report is skipped without a historical fallback or fake
 empty report.
 
-No production 5m or 20m report uses historical `openInterestHist`. The normal
-TOP job also makes no current-OI or kline request; it consumes the latest fresh
-completed collector snapshot produced at the unchanged 30-second cadence.
+Neither the production 5m IMPULSE nor the 15m anomaly report adds a historical
+`openInterestHist` request. The rollback-only TOP job also makes no current-OI
+or kline request; it consumes the latest fresh completed collector snapshot
+produced at the unchanged 30-second cadence.
 Rolling 60m and 120m analytics remain observational only.
 Docker Compose persists the signal-state JSON under the host `state` directory.
 
@@ -248,7 +250,8 @@ Docker Compose persists the signal-state JSON under the host `state` directory.
 `bot.log` contains general application, scheduler, and Telegram diagnostics.
 `rolling_oi.log`
 contains the rolling OI engine, collector, mark-price stream, rolling analytics,
-production 5m signal/publish diagnostics, rolling 20m TOP diagnostics, and
+production 5m signal/publish diagnostics, live 15m anomaly diagnostics,
+rollback-only rolling 20m TOP diagnostics, and
 remaining shadow analytics. Console output continues to show both streams.
 
 ```powershell
@@ -261,30 +264,32 @@ Get-Content .\rolling_oi.log -Tail 0 -Wait |
     Select-String -Pattern 'ROLLING_TOP_SNAPSHOT|ROLLING_TOP_SUMMARY|ROLLING_TOP_PUBLISH|ROLLING_TOP_SKIP'
 ```
 
-### Near-term roadmap
+### Current production and roadmap
 
-Tasks 20 and 21 are implemented: production TOP uses completed collector
-snapshots, and durable OI + Price research telemetry supplies multi-day 5m
-source bars. **Approved next change (not deployed):** after shadow validation,
-the current 20m TOP will be replaced by a UTC-aligned 15m OI ANOMALY TOP; the
-existing 5m IMPULSE remains unchanged. The full target contract is in
-`docs/15m_oi_anomaly_top_spec.md`.
+Current production is **5m IMPULSE + 15m OI ANOMALY**. The 5m rolling OI
+IMPULSE remains unchanged. The 15m report uses closed UTC-aligned intervals,
+positive `OI15% >= +1%` eligibility, the same-symbol trailing 14-day classic
+Z baseline (minimum 96 valid prior observations), and existing ALL/PROP routing.
+Finite Z ranks first descending, then OI%, then symbol; PX% is context only.
 
-1. **Task 22:** documentation/specification rebaseline (this task).
-2. **Task 23:** pure 15m anomaly analytics core + offline CLI, with no runtime
-   or Telegram changes.
-3. **Task 24:** NEW(12h), ranking, and eligibility layer.
-4. **Task 25:** implemented opt-in live runtime and staging Telegram publication;
-   safe defaults keep 20m TOP production behavior unchanged.
-5. **Task 26:** production cutover from 20m TOP to 15m anomaly TOP.
-6. **Task 27:** live stabilization and final documentation cleanup.
+On 2026-09-05, commit `d2aa19735f7597cc7d518cf45526f9de4216fa9e` was manually
+cut over and validated in production: numeric-Z reports reached ALL and PROP
+for all 522 current symbols. Production enables 15m runtime and publication and
+disables the legacy 20m schedule with `ROLLING_OI_20M_TOP_ENABLED=0`. The 20m
+implementation remains in code as rollback compatibility.
 
-Grid Candidate, Impulse -> Pullback -> Continuation, 60m/120m product
-decision, threshold tuning, and operational hardening are deferred backlog,
-not cancelled.
+Task history: Task 25 implemented the opt-in runtime and staging publication.
+Task 26 corrects NEW semantics and rebaselines post-cutover documentation.
+Task 27 is production stabilization and observation, not a preplanned product
+change. Deferred directions remain unnumbered.
 
-Production 5m/20m thresholds remain unchanged until the research telemetry
-provides sufficient evidence.
+### Planned research direction: OI Z-SCORE FLASH
+
+FLASH is not implemented or assigned a task number. It is a possible near-online
+1m research direction: positive OI anomalies with Z > +3 and negative OI
+anomalies with Z < -3. OI% and PX% would be context only, not gates; it carries
+no BUY/SELL, squeeze, or liquidation interpretation. Any future publication
+requires 1m telemetry, shadow validation, and anti-spam trigger/rearm design.
 ## Tablet test release (Termux + proot Ubuntu)
 
 Runtime stack: Android -> Termux -> `proot-distro` Ubuntu -> this project ->
@@ -336,7 +341,7 @@ and 3% rearm.
 3. Update/deploy this rolling version, run the preflight check, then start it.
 4. Inspect `bot.log` and `rolling_oi.log` for startup and collector health.
 5. Allow natural warm-up before evaluating output: about 5 minutes for 5m
-   IMPULSE and about 20 minutes for 20m TOP. The collector itself starts
+   IMPULSE and the next closed 15m interval for OI ANOMALY. The collector starts
    immediately.
 6. Verify the normal Telegram output in the existing ALL/PROP destinations.
 
@@ -350,7 +355,8 @@ may suppress duplicate active 5m extremes across a restart for its configured
 Application logs remain in the project/runtime location, never continuously in
 Android shared storage. `bot.log` holds startup, scheduler, general application
 and Telegram events. `rolling_oi.log` holds the price stream, rate-limit budget,
-collector summaries, rolling analytics/signals, 20m TOP diagnostics, and signal
+collector summaries, rolling analytics/signals, 15m anomaly diagnostics,
+rollback-only 20m TOP diagnostics, and signal
 state diagnostics. Each uses the existing rotating-file configuration: 5 MB per
 file with five retained backups by default.
 
@@ -377,19 +383,19 @@ or state. Select the resulting ZIP from Android Downloads and upload it to
 ChatGPT for analysis. A Telegram `/logs` command is only a possible future
 convenience, not part of this release.
 
-### Пояснення ключових параметрів
+### РџРѕСЏСЃРЅРµРЅРЅСЏ РєР»СЋС‡РѕРІРёС… РїР°СЂР°РјРµС‚СЂС–РІ
 
-* `ROLLING_OI_5M_TRIGGER_PCT` / `ROLLING_OI_5M_REARM_PCT` — production 5m hysteresis
-* `TOP_THRESHOLD` — поріг OI% за 20 хв (звіт All)
-* `SEND_EMPTY_REPORTS=1` — надсилати повідомлення навіть якщо сигналів нема (з приміткою)
-* `IMPULSE_THRESHOLD` / `SHOW_TOP_WHEN_EMPTY` — retained legacy configuration; not production 5m inputs
-* `HTTP_TIMEOUT/HTTP_RETRIES` — важливо для нестабільного інтернету
+* `ROLLING_OI_5M_TRIGGER_PCT` / `ROLLING_OI_5M_REARM_PCT` вЂ” production 5m hysteresis
+* `TOP_THRESHOLD` вЂ” РїРѕСЂС–Рі OI% Р·Р° 20 С…РІ (Р·РІС–С‚ All)
+* `SEND_EMPTY_REPORTS=1` вЂ” РЅР°РґСЃРёР»Р°С‚Рё РїРѕРІС–РґРѕРјР»РµРЅРЅСЏ РЅР°РІС–С‚СЊ СЏРєС‰Рѕ СЃРёРіРЅР°Р»С–РІ РЅРµРјР° (Р· РїСЂРёРјС–С‚РєРѕСЋ)
+* `IMPULSE_THRESHOLD` / `SHOW_TOP_WHEN_EMPTY` вЂ” retained legacy configuration; not production 5m inputs
+* `HTTP_TIMEOUT/HTTP_RETRIES` вЂ” РІР°Р¶Р»РёРІРѕ РґР»СЏ РЅРµСЃС‚Р°Р±С–Р»СЊРЅРѕРіРѕ С–РЅС‚РµСЂРЅРµС‚Сѓ
 
 ---
 
-## Локальний запуск (без Docker)
+## Р›РѕРєР°Р»СЊРЅРёР№ Р·Р°РїСѓСЃРє (Р±РµР· Docker)
 
-### 1) Встановити залежності
+### 1) Р’СЃС‚Р°РЅРѕРІРёС‚Рё Р·Р°Р»РµР¶РЅРѕСЃС‚С–
 
 **PowerShell (Windows):**
 
@@ -399,7 +405,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-### 2) Запустити
+### 2) Р—Р°РїСѓСЃС‚РёС‚Рё
 
 ```powershell
 python run.py
@@ -407,53 +413,53 @@ python run.py
 
 ---
 
-## Docker (рекомендовано)
+## Docker (СЂРµРєРѕРјРµРЅРґРѕРІР°РЅРѕ)
 
-### Передумови
+### РџРµСЂРµРґСѓРјРѕРІРё
 
-* Встановлений **Docker Desktop**
-* Увімкнений автозапуск Docker Desktop:
-  **Settings → General → Start Docker Desktop when you log in**
+* Р’СЃС‚Р°РЅРѕРІР»РµРЅРёР№ **Docker Desktop**
+* РЈРІС–РјРєРЅРµРЅРёР№ Р°РІС‚РѕР·Р°РїСѓСЃРє Docker Desktop:
+  **Settings в†’ General в†’ Start Docker Desktop when you log in**
 
-### Запуск у фоні
+### Р—Р°РїСѓСЃРє Сѓ С„РѕРЅС–
 
 ```powershell
 docker compose up -d --build
 ```
 
-### Логи
+### Р›РѕРіРё
 
 ```powershell
 docker compose logs -f
 ```
 
-Вийти з перегляду логів: `Ctrl + C` (контейнер продовжує працювати)
+Р’РёР№С‚Рё Р· РїРµСЂРµРіР»СЏРґСѓ Р»РѕРіС–РІ: `Ctrl + C` (РєРѕРЅС‚РµР№РЅРµСЂ РїСЂРѕРґРѕРІР¶СѓС” РїСЂР°С†СЋРІР°С‚Рё)
 
-### Перевірити статус
+### РџРµСЂРµРІС–СЂРёС‚Рё СЃС‚Р°С‚СѓСЃ
 
 ```powershell
 docker ps
 ```
 
-### Перезапуск
+### РџРµСЂРµР·Р°РїСѓСЃРє
 
 ```powershell
 docker restart oitgbot
 ```
 
-або:
+Р°Р±Рѕ:
 
 ```powershell
 docker compose restart
 ```
 
-### Зупинити і прибрати контейнер
+### Р—СѓРїРёРЅРёС‚Рё С– РїСЂРёР±СЂР°С‚Рё РєРѕРЅС‚РµР№РЅРµСЂ
 
 ```powershell
 docker compose down
 ```
 
-### Після змін у коді (перебудувати образ)
+### РџС–СЃР»СЏ Р·РјС–РЅ Сѓ РєРѕРґС– (РїРµСЂРµР±СѓРґСѓРІР°С‚Рё РѕР±СЂР°Р·)
 
 ```powershell
 docker compose up -d --build
@@ -461,120 +467,100 @@ docker compose up -d --build
 
 ---
 
-## Автовідновлення після ребуту / падіння
+## РђРІС‚РѕРІС–РґРЅРѕРІР»РµРЅРЅСЏ РїС–СЃР»СЏ СЂРµР±СѓС‚Сѓ / РїР°РґС–РЅРЅСЏ
 
-У `docker-compose.yml` використовується:
+РЈ `docker-compose.yml` РІРёРєРѕСЂРёСЃС‚РѕРІСѓС”С‚СЊСЃСЏ:
 
 * `restart: unless-stopped`
 * `stop_signal: SIGTERM`
 * `stop_grace_period: 20s`
 
-Це означає:
+Р¦Рµ РѕР·РЅР°С‡Р°С”:
 
-* після перезавантаження Windows і старту Docker Desktop контейнер підніметься сам
-* при `docker stop` бот завершується коректно (graceful shutdown)
+* РїС–СЃР»СЏ РїРµСЂРµР·Р°РІР°РЅС‚Р°Р¶РµРЅРЅСЏ Windows С– СЃС‚Р°СЂС‚Сѓ Docker Desktop РєРѕРЅС‚РµР№РЅРµСЂ РїС–РґРЅС–РјРµС‚СЊСЃСЏ СЃР°Рј
+* РїСЂРё `docker stop` Р±РѕС‚ Р·Р°РІРµСЂС€СѓС”С‚СЊСЃСЏ РєРѕСЂРµРєС‚РЅРѕ (graceful shutdown)
 
 ---
 
-## Розклад (cron)
+## Р РѕР·РєР»Р°Рґ (cron)
 
 * **5m IMPULSE**: rolling collector cycle, every 30 seconds by default (no cron)
-* **20m TOP**: rolling in-memory snapshot at `minute=0,20,40`, `second=10`
+* **15m OI ANOMALY**: UTC-aligned closed intervals, with ALL/PROP publication
+* **20m TOP**: legacy rollback scheduler, disabled in production with
+  `ROLLING_OI_20M_TOP_ENABLED=0`
 
 ---
 
-## Типові проблеми
+## РўРёРїРѕРІС– РїСЂРѕР±Р»РµРјРё
 
 ### `Chat not found`
 
-* неправильний `ALL_CHANNEL_ID` / `PROP_CHANNEL_ID`
-* бот не доданий у канал або не має прав писати
-* ID має бути у форматі `-100...`
+* РЅРµРїСЂР°РІРёР»СЊРЅРёР№ `ALL_CHANNEL_ID` / `PROP_CHANNEL_ID`
+* Р±РѕС‚ РЅРµ РґРѕРґР°РЅРёР№ Сѓ РєР°РЅР°Р» Р°Р±Рѕ РЅРµ РјР°С” РїСЂР°РІ РїРёСЃР°С‚Рё
+* ID РјР°С” Р±СѓС‚Рё Сѓ С„РѕСЂРјР°С‚С– `-100...`
 
 ### `Telegram send timeout`
 
-Іноді Telegram приймає повідомлення, але відповідь приходить пізно → клієнт бачить `TimedOut`.
-У нас є:
+Р†РЅРѕРґС– Telegram РїСЂРёР№РјР°С” РїРѕРІС–РґРѕРјР»РµРЅРЅСЏ, Р°Р»Рµ РІС–РґРїРѕРІС–РґСЊ РїСЂРёС…РѕРґРёС‚СЊ РїС–Р·РЅРѕ в†’ РєР»С–С”РЅС‚ Р±Р°С‡РёС‚СЊ `TimedOut`.
+РЈ РЅР°СЃ С”:
 
-* збільшені таймаути в `Application.builder()`
-* 1 повторна спроба в `TelegramSender`
+* Р·Р±С–Р»СЊС€РµРЅС– С‚Р°Р№РјР°СѓС‚Рё РІ `Application.builder()`
+* 1 РїРѕРІС‚РѕСЂРЅР° СЃРїСЂРѕР±Р° РІ `TelegramSender`
 
-### Нема інтернету
+### РќРµРјР° С–РЅС‚РµСЂРЅРµС‚Сѓ
 
-Контейнер не впаде. Можуть бути помилки у логах. Коли інтернет повернеться — бот продовжить роботу.
+РљРѕРЅС‚РµР№РЅРµСЂ РЅРµ РІРїР°РґРµ. РњРѕР¶СѓС‚СЊ Р±СѓС‚Рё РїРѕРјРёР»РєРё Сѓ Р»РѕРіР°С…. РљРѕР»Рё С–РЅС‚РµСЂРЅРµС‚ РїРѕРІРµСЂРЅРµС‚СЊСЃСЏ вЂ” Р±РѕС‚ РїСЂРѕРґРѕРІР¶РёС‚СЊ СЂРѕР±РѕС‚Сѓ.
 
 ---
 
-## Корисні команди (шпаргалка)
+## РљРѕСЂРёСЃРЅС– РєРѕРјР°РЅРґРё (С€РїР°СЂРіР°Р»РєР°)
 
 ```powershell
-# старт
+# СЃС‚Р°СЂС‚
 docker compose up -d
 
-# старт з перебудовою
+# СЃС‚Р°СЂС‚ Р· РїРµСЂРµР±СѓРґРѕРІРѕСЋ
 docker compose up -d --build
 
-# логи
+# Р»РѕРіРё
 docker compose logs -f
 
-# статус
+# СЃС‚Р°С‚СѓСЃ
 docker ps
 
-# перезапуск
+# РїРµСЂРµР·Р°РїСѓСЃРє
 docker restart oitgbot
 
-# стоп
+# СЃС‚РѕРї
 docker compose down
 ```
 
 ---
 
-## Безпека
+## Р‘РµР·РїРµРєР°
 
-* `.env` не додавай у git
-* `BOT_TOKEN` тримай приватним
+* `.env` РЅРµ РґРѕРґР°РІР°Р№ Сѓ git
+* `BOT_TOKEN` С‚СЂРёРјР°Р№ РїСЂРёРІР°С‚РЅРёРј
 
 ```
 ```
 
-## Live 15m OI anomaly staging (Task 25)
+## Production 15m OI anomaly
 
-The live analyzer is production-safe and disabled by default. It bootstraps one
-bounded 14-day SQLite snapshot, establishes the latest closed interval as its
-startup reference, then reads only each newly closed UTC-aligned 15m interval.
-It never replays historical Telegram reports and makes no additional Binance
-requests. Incomplete current data and analysis errors are retried; successful
-intervals are processed at most once per running process. Telegram transport
-errors are isolated from subsequent analytics.
+The 15m analyzer is live in production after the validated 2026-09-05 cutover.
+Its runtime bootstraps a bounded 14-day SQLite snapshot, establishes a
+non-published startup reference, and then reads only newly closed UTC-aligned
+15m intervals. It does not replay historical reports or add Binance requests.
+The active production deployment enables 15m runtime and Telegram publication;
+the legacy 20m scheduler is disabled there with
+`ROLLING_OI_20M_TOP_ENABLED=0`, while its code remains available for rollback.
 
-Example laptop staging configuration (use the existing test bot/channel values):
+`NEW` uses exactly `[T - 12h, T)`: an eligible current candidate is NEW when no
+prior eligible same-symbol candidate is known in that window. Missing intervals,
+restart gaps, downtime, and coverage below 48/48 do not change this result.
+The current interval is excluded. Telegram prefixes NEW rows with `рџ†•` and adds
+`рџ†• NEW` only when at least one NEW row exists; there is no вЏі status marker.
 
-```dotenv
-TELEGRAM_PUBLISH_ENABLED=1
-OI_ANOMALY_15M_ENABLED=1
-OI_ANOMALY_15M_TELEGRAM_ENABLED=1
-ROLLING_OI_20M_TOP_ENABLED=0
-RESEARCH_TELEMETRY_ENABLED=1
-RESEARCH_TELEMETRY_DB_PATH=state/oi_research_test.sqlite3
-RESEARCH_TELEMETRY_RETENTION_DAYS=14
-OI_ANOMALY_15M_BASELINE_DAYS=14
-OI_ANOMALY_15M_MIN_HISTORY=96
-OI_ANOMALY_15M_ELIGIBILITY_PCT=1.0
-OI_ANOMALY_15M_NEW_LOOKBACK_HOURS=12
-OI_ANOMALY_15M_LOG_TOP_N=20
-```
-
-Defaults are `OI_ANOMALY_15M_ENABLED=0`,
-`OI_ANOMALY_15M_TELEGRAM_ENABLED=0`, and
-`ROLLING_OI_20M_TOP_ENABLED=1`, so existing production behavior is unchanged.
-With only the analyzer enabled it operates live in log-only shadow mode.
-Disabling the 20m TOP flag prevents that scheduler job from being registered.
-
-NEW uses exactly `[T - 12h, T)`. A positive `🆕` claim requires all 48/48
-prior aligned observations to be valid and none eligible. `⏳` means no prior
-eligible interval was observed but history is incomplete; the candidate remains
-visible and the marker is a coverage status, not a prediction. A known prior
-eligible interval is conclusively not NEW even when other history is missing.
-Reports use `Z | OI% | PX% | Ticker`, keep all eligible rows in deterministic
-rank order, split only at row boundaries, and route the existing PROP subset.
-`SEND_EMPTY_REPORTS=0` suppresses empty anomaly reports to avoid staging spam.
+For manual configuration, use the existing production credentials and explicitly
+set `OI_ANOMALY_15M_ENABLED=1`, `OI_ANOMALY_15M_TELEGRAM_ENABLED=1`, and
+`ROLLING_OI_20M_TOP_ENABLED=0`. Do not place credentials in source control.

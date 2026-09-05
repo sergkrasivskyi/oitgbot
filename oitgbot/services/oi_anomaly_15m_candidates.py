@@ -49,7 +49,7 @@ def is_eligible_observation(
 
 @dataclass(frozen=True, slots=True)
 class NewHistoryStatus:
-    is_new: bool | None
+    is_new: bool
     new_status_reason: str
     new_lookback_hours: float
     previous_eligible_count: int
@@ -147,10 +147,9 @@ class EligibilityHistory:
                 expected,
                 coverage,
             )
-        complete = len(valid) == expected
         return NewHistoryStatus(
-            True if complete else None,
-            "no_previous_eligible_interval" if complete else "incomplete_new_history",
+            True,
+            "no_previous_eligible_interval",
             self.lookback_hours,
             0,
             None,
@@ -169,7 +168,7 @@ class OIAnomaly15mCandidate:
     eligibility_threshold_pct: float
     eligibility_reason: str
     rank: int | None
-    is_new: bool | None
+    is_new: bool
     new_status_reason: str
     new_lookback_hours: float
     previous_eligible_count: int

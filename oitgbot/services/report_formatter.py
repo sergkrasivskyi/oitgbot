@@ -50,13 +50,7 @@ class ReportFormatter:
     def _format_oi_anomaly_row(self, candidate) -> str:
         link = self.coinglass_link(candidate.symbol)
         ticker = f'<a href="{link}">{html.escape(candidate.symbol)}</a>'
-        marker = (
-            "🆕 "
-            if candidate.is_new is True
-            else "⏳ "
-            if candidate.is_new is None
-            else ""
-        )
+        marker = "🆕 " if candidate.is_new else ""
         return (
             f"{marker}{self._fmt_anomaly_value(candidate.z_score)} | "
             f"{self._fmt_anomaly_value(candidate.oi_change_pct, percent=True)} | "
@@ -68,8 +62,8 @@ class ReportFormatter:
         candidates = [candidate for candidate in candidates if candidate.is_eligible]
         lines = ["<b>📊 OI ANOMALY · 15m</b>", "<b>Z | OI% | PX% | Ticker</b>", ""]
         lines.extend(self._format_oi_anomaly_row(candidate) for candidate in candidates)
-        if any(candidate.is_new is not False for candidate in candidates):
-            lines.extend(["", "🆕 NEW · ⏳ NEW history incomplete"])
+        if any(candidate.is_new for candidate in candidates):
+            lines.extend(["", "🆕 NEW"])
         return "\n".join(lines).strip()
 
     def format_oi_anomaly_15m_chunks(self, candidates, *, max_length: int = 4096):

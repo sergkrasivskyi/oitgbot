@@ -51,7 +51,7 @@ def full_quiet_history(symbol="AAAUSDT"):
     )
 
 
-def test_locked_new_12h_full_and_incomplete_semantics():
+def test_locked_new_12h_semantics_do_not_gate_on_coverage():
     assert DEFAULT_NEW_LOOKBACK_HOURS == 12
     full = EligibilityHistory.reconstruct(full_quiet_history())
     confirmed = build_candidates((anomaly(2.0),), full)[0]
@@ -60,8 +60,8 @@ def test_locked_new_12h_full_and_incomplete_semantics():
     assert confirmed.history_expected_interval_count == 48
     partial = EligibilityHistory.reconstruct(full_quiet_history()[:-1])
     unknown = build_candidates((anomaly(2.0),), partial)[0]
-    assert unknown.is_new is None
-    assert unknown.new_status_reason == "incomplete_new_history"
+    assert unknown.is_new is True
+    assert unknown.new_status_reason == "no_previous_eligible_interval"
     assert unknown.history_valid_interval_count == 47
 
 
@@ -79,21 +79,22 @@ def test_formatter_markers_legend_semantics_and_order():
         (anomaly(2.0, symbol="NEWUSDT", z=5.26),),
         EligibilityHistory.reconstruct(full_quiet_history("NEWUSDT")),
     )[0]
-    incomplete = build_candidates(
+    recent_new = build_candidates(
         (anomaly(1.5, symbol="WAITUSDT", z=None),), EligibilityHistory()
     )[0]
     prior = EligibilityHistory.reconstruct(
         (observation(3.0, start=NOW - BAR * 3, symbol="OLDUSDT"),)
     )
     old = build_candidates((anomaly(1.2, symbol="OLDUSDT", z=4.0),), prior)[0]
-    text = ReportFormatter().format_oi_anomaly_15m((confirmed, old, incomplete))
+    text = ReportFormatter().format_oi_anomaly_15m((confirmed, old, recent_new))
     assert "📊 OI ANOMALY · 15m" in text
     assert "Z | OI% | PX% | Ticker" in text
     assert "🆕 5.26 | +2.00% | +0.50%" in text
-    assert "⏳ N/A | +1.50% | +0.50%" in text
+    assert "🆕 N/A | +1.50% | +0.50%" in text
     old_line = next(line for line in text.splitlines() if "OLDUSDT" in line)
     assert "🆕" not in old_line and "⏳" not in old_line
-    assert "🆕 NEW · ⏳ NEW history incomplete" in text
+    assert "🆕 NEW" in text
+    assert "⏳" not in text
     assert "UNKNOWN" not in text and "MAYBE NEW" not in text
 
 
