@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import html
+from collections.abc import Callable
 
 from ..models import OIRow, RollingOIWindowResult
 from .rolling_oi_signal_state import RollingOISignalEvent
 
 
 class ReportFormatter:
+    def __init__(
+        self, spot_base_lookup: Callable[[str], str | None] | None = None
+    ) -> None:
+        self._spot_base_lookup = spot_base_lookup
+
     @staticmethod
     def coinglass_link(symbol: str) -> str:
         return f"https://www.coinglass.com/tv/Binance_{symbol}"
@@ -14,6 +20,19 @@ class ReportFormatter:
     @staticmethod
     def _fmt_signed(value: float) -> str:
         return f"{value:+.2f}"
+
+    def _ticker(self, symbol: str) -> str:
+        link = self.coinglass_link(symbol)
+        ticker = f'<a href="{link}">{html.escape(symbol)}</a>'
+        spot_base = (
+            self._spot_base_lookup(symbol)
+            if self._spot_base_lookup is not None
+            else None
+        )
+        futures_base = symbol.removesuffix("USDT")
+        if spot_base and spot_base != futures_base:
+            ticker += f" · {html.escape(spot_base)} (S)"
+        return ticker
 
     def format_message(
         self,
@@ -29,8 +48,7 @@ class ReportFormatter:
         lines: list[str] = [header, ""]
 
         for row in rows:
-            link = self.coinglass_link(row.symbol)
-            ticker = f'<a href="{link}">{html.escape(row.symbol)}</a>'
+            ticker = self._ticker(row.symbol)
 
             oi_str = self._fmt_signed(row.oi_pct)
             px_str = self._fmt_signed(row.price_pct)
@@ -48,8 +66,7 @@ class ReportFormatter:
         return rendered + ("%" if percent else "")
 
     def _format_oi_anomaly_row(self, candidate) -> str:
-        link = self.coinglass_link(candidate.symbol)
-        ticker = f'<a href="{link}">{html.escape(candidate.symbol)}</a>'
+        ticker = self._ticker(candidate.symbol)
         marker = "🆕 " if candidate.is_new else ""
         return (
             f"{marker}{self._fmt_anomaly_value(candidate.z_score)} | "
@@ -89,8 +106,7 @@ class ReportFormatter:
         return tuple(chunks)
 
     def format_rolling_impulse(self, event: RollingOISignalEvent) -> str:
-        link = self.coinglass_link(event.symbol)
-        ticker = f'<a href="{link}">{html.escape(event.symbol)}</a>'
+        ticker = self._ticker(event.symbol)
         price = (
             self._fmt_signed(event.price_change_pct)
             if event.price_change_pct is not None
@@ -111,8 +127,7 @@ class ReportFormatter:
             return f"{header}\n\n{html.escape(empty_note)}"
         lines = [header, ""]
         for result in results:
-            link = self.coinglass_link(result.symbol)
-            ticker = f'<a href="{link}">{html.escape(result.symbol)}</a>'
+            ticker = self._ticker(result.symbol)
             price = (
                 self._fmt_signed(result.price_change_pct)
                 if result.price_change_pct is not None

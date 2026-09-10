@@ -12,6 +12,11 @@ finite-Z / OI% / symbol ranking. PX15% is context only. ALL and PROP routing
 are production-validated. The legacy rolling 20m TOP scheduler is disabled in
 production with `ROLLING_OI_20M_TOP_ENABLED=0`; its implementation remains as
 rollback compatibility.
+Task 28 does not alter this math. Once Task 28 is manually deployed, current
+15m candidates come only from the canonical spot-backed futures universe. Spot
+mapping/display metadata does not participate in eligibility, OI15%, PX15%, Z,
+ranking, or NEW. Until that deployment is validated, production still uses the
+prior futures universe.
 
 ## NEW marker
 
@@ -31,9 +36,11 @@ The live runtime uses the existing durable closed 5m OI and price telemetry,
 bootstraps one bounded SQLite history, establishes a non-published startup
 reference, and processes only newly completed intervals. It scores before
 appending current observations, retries incomplete source data, and does not
-replay historic Telegram reports after restart. No new Binance REST request,
-WebSocket, telemetry schema, collector cadence, or market-data subscription is
-introduced.
+replay historic Telegram reports after restart. The 15m analyzer adds no
+Binance REST request. Task 28 adds one bulk Spot
+exchange-info request on symbol-cache refresh, not per symbol or collector
+cycle. It adds no WebSocket, telemetry schema, collector-cadence, or
+market-data subscription change.
 
 ## Rebaselined history and roadmap
 
@@ -44,7 +51,8 @@ introduced.
 | Task 25 | Opt-in live runtime and staging publication. |
 | 2026-09-05 cutover | `d2aa197` manually promoted and validated in production. |
 | Task 26 | Correct NEW semantics and rebaseline post-cutover documentation. |
-| Task 27 | Production stabilization and observation. |
+| Task 27 | Production stabilization/observation PASS; no material runtime failures found. |
+| Task 28 | Spot-backed universe code PASS; manual deployment/live validation pending. |
 
 ## Planned research direction: OI Z-SCORE FLASH
 
@@ -166,4 +174,4 @@ The following remains deferred, not cancelled, and has no new task number:
 
 ## Current production note
 
-The Task 25 runtime is now operating as production 15m OI ANOMALY after the 2026-09-05 cutover. The legacy 20m implementation is retained only for rollback.
+The Task 25 runtime is operating as production 15m OI ANOMALY after the 2026-09-05 cutover. Task 27 observation passed. Task 28 changes only the candidate universe and display metadata; its code is complete but not yet manually deployed. The legacy 20m implementation is retained only for rollback.

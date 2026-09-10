@@ -11,6 +11,7 @@ from requests.exceptions import RequestException
 
 from oitgbot.config import settings
 from oitgbot.models import BinanceRateLimit, CurrentOpenInterest
+from oitgbot.services.spot_backed_universe import FuturesMarket, SpotMarket
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 class BinanceAPI:
     def __init__(self) -> None:
         self.base_url = settings.binance_base_url.rstrip("/")
+        self.spot_base_url = settings.binance_spot_base_url.rstrip("/")
         self.timeout = settings.http_timeout
         self.retries = settings.http_retries
 
@@ -57,7 +59,18 @@ class BinanceAPI:
         return session
 
     def _request(self, endpoint: str, params: dict[str, str] | None = None) -> Any:
-        url = f"{self.base_url}{endpoint}"
+        return self._request_from(self.base_url, endpoint, params)
+
+    def _spot_request(self, endpoint: str, params: dict[str, str] | None = None) -> Any:
+        return self._request_from(self.spot_base_url, endpoint, params)
+
+    def _request_from(
+        self,
+        base_url: str,
+        endpoint: str,
+        params: dict[str, str] | None = None,
+    ) -> Any:
+        url = f"{base_url}{endpoint}"
         last_error: Exception | None = None
 
         for attempt in range(self.retries + 1):
@@ -105,7 +118,7 @@ class BinanceAPI:
                         exc,
                     )
 
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 last_error = exc
                 logger.error(
                     "Unexpected Binance client error: endpoint=%s params=%s error=%s",
@@ -115,51 +128,82 @@ class BinanceAPI:
                 )
                 break
 
-        raise last_error if last_error else RuntimeError("Unknown Binance request error")
+        raise (
+            last_error if last_error else RuntimeError("Unknown Binance request error")
+        )
 
     def get_perpetual_futures_symbols(self) -> list[str]:
-        data = self._request("/fapi/v1/exchangeInfo")
-        out: list[str] = []
+        return [market.symbol for market in self.get_perpetual_futures_markets()]
 
+    def get_perpetual_futures_markets(self) -> list[FuturesMarket]:
+        data = self._request("/fapi/v1/exchangeInfo")
+        if not isinstance(data, dict):
+            raise TypeError("futures exchangeInfo response must be an object")
+        out: list[FuturesMarket] = []
         for item in data.get("symbols", []):
+            if not isinstance(item, dict):
+                continue
             if item.get("contractType") != "PERPETUAL":
                 continue
             if item.get("status") != "TRADING":
                 continue
-
             symbol = item.get("symbol")
-            if not symbol:
+            base_asset = item.get("baseAsset")
+            if not self._valid_market_name(symbol) or not self._valid_market_name(
+                base_asset
+            ):
                 continue
-
-            # Працюємо тільки з USDT-парами
-            if not symbol.endswith("USDT"):
+            if item.get("quoteAsset") != "USDT" or symbol != f"{base_asset}USDT":
                 continue
-
-            # Відсікаємо не-ASCII тікери (ієрогліфи тощо)
-            if not symbol.isascii():
-                continue
-
-            out.append(symbol)
-
+            out.append(FuturesMarket(symbol, base_asset))
         return out
+
+    def get_active_spot_usdt_markets(self) -> list[SpotMarket]:
+        data = self._spot_request("/api/v3/exchangeInfo")
+        if not isinstance(data, dict):
+            raise TypeError("spot exchangeInfo response must be an object")
+        out: list[SpotMarket] = []
+        for item in data.get("symbols", []):
+            if not isinstance(item, dict):
+                continue
+            if item.get("status") != "TRADING" or item.get("quoteAsset") != "USDT":
+                continue
+            symbol = item.get("symbol")
+            base_asset = item.get("baseAsset")
+            if not self._valid_market_name(symbol) or not self._valid_market_name(
+                base_asset
+            ):
+                continue
+            if symbol != f"{base_asset}USDT":
+                continue
+            out.append(SpotMarket(symbol, base_asset))
+        return out
+
+    @staticmethod
+    def _valid_market_name(value: object) -> bool:
+        return (
+            isinstance(value, str)
+            and bool(value)
+            and value.isascii()
+            and value.isalnum()
+            and value.upper() == value
+        )
 
     def get_current_open_interest(self, symbol: str) -> CurrentOpenInterest:
         requested_symbol = symbol.upper()
-        data = self._request(
-            "/fapi/v1/openInterest", {"symbol": requested_symbol}
-        )
+        data = self._request("/fapi/v1/openInterest", {"symbol": requested_symbol})
         return CurrentOpenInterest.from_binance_payload(data, requested_symbol)
 
     def get_rate_limits(self) -> list[BinanceRateLimit]:
         data = self._request("/fapi/v1/exchangeInfo")
         if not isinstance(data, dict):
-            raise ValueError("exchangeInfo response must be an object")
+            raise ValueError("exchangeInfo response must be an object")  # noqa: TRY004
 
         raw_rate_limits = data.get("rateLimits")
         if raw_rate_limits is None:
             return []
         if not isinstance(raw_rate_limits, list):
-            raise ValueError("exchangeInfo rateLimits must be a list")
+            raise ValueError("exchangeInfo rateLimits must be a list")  # noqa: TRY004
 
         return [
             BinanceRateLimit.from_binance_payload(rate_limit)
@@ -194,7 +238,9 @@ class BinanceAPI:
 
         return self._request("/futures/data/openInterestHist", params)
 
-    def get_klines(self, symbol: str, interval: str = "5m", limit: int = 2) -> list[list]:
+    def get_klines(
+        self, symbol: str, interval: str = "5m", limit: int = 2
+    ) -> list[list]:
         params = {
             "symbol": symbol.upper(),
             "interval": interval,
@@ -202,9 +248,10 @@ class BinanceAPI:
         }
         return self._request("/fapi/v1/klines", params)
 
-    def price_change_pct(self, symbol: str, interval: str = "5m", limit: int = 2) -> float:
-        if limit < 2:
-            limit = 2
+    def price_change_pct(
+        self, symbol: str, interval: str = "5m", limit: int = 2
+    ) -> float:
+        limit = max(limit, 2)
 
         data = self.get_klines(symbol, interval=interval, limit=limit)
         if not data or len(data) < 2:
@@ -213,7 +260,7 @@ class BinanceAPI:
         try:
             prev_close = float(data[-2][4])
             last_close = float(data[-1][4])
-        except Exception:
+        except (IndexError, TypeError, ValueError):
             return 0.0
 
         if prev_close == 0:
@@ -229,7 +276,7 @@ class BinanceAPI:
         try:
             first_close = float(data[0][4])
             last_close = float(data[-1][4])
-        except Exception:
+        except (IndexError, TypeError, ValueError):
             return 0.0
 
         if first_close == 0:
@@ -242,6 +289,6 @@ class BinanceAPI:
         if session is not None:
             try:
                 session.close()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
             self._local.session = None

@@ -20,6 +20,7 @@ from .services.report_formatter import ReportFormatter
 from .services.rolling_impulse_publisher import RollingImpulsePublisher
 from .services.rolling_oi_shadow_runtime import RollingOIShadowRuntime
 from .services.rolling_oi_signal_persistence import RollingOISignalStatePersistence
+from .services.spot_backed_universe import SpotBackedUniverse
 
 
 def build_shadow_runtime(
@@ -162,15 +163,19 @@ async def main_async() -> None:
 
         log.info("Initializing services...")
         binance_api = BinanceAPI()
+        spot_backed_universe = SpotBackedUniverse()
         telegram_sender = TelegramSender(
             app, publish_enabled=settings.telegram_publish_enabled
         )
-        report_formatter = ReportFormatter()
+        report_formatter = ReportFormatter(
+            spot_base_lookup=spot_backed_universe.spot_base_for
+        )
 
         jobs = SchedulerJobs(
             binance_api=binance_api,
             telegram_sender=telegram_sender,
             report_formatter=report_formatter,
+            spot_backed_universe=spot_backed_universe,
         )
 
         if settings.rolling_oi_shadow_enabled:

@@ -1,6 +1,54 @@
-# OI TG Bot (Binance Futures в†’ Telegram)
+# OI TG Bot (Binance Futures → Telegram)
 
-Р‘РѕС‚ СЃРєР°РЅСѓС” **Binance USDв“€-M Perpetual (USDT)** С„вЂ™СЋС‡РµСЂСЃРё, СЂР°С…СѓС” Р·РјС–РЅСѓ **Open Interest (OI)** С‚Р° **С†С–РЅРё**, С– РїСѓР±Р»С–РєСѓС” Р·РІС–С‚Рё РІ Telegram-РєР°РЅР°Р»Рё Р·Р° СЂРѕР·РєР»Р°РґРѕРј.
+The bot collects current Open Interest for a canonical set of Binance USDⓈ-M
+USDT perpetual futures, combines it with the existing mark-price stream, and
+publishes production 5m IMPULSE alerts and 15m OI ANOMALY reports to Telegram.
+
+## Current production
+
+- 5m rolling OI IMPULSE is enabled with unchanged 5% trigger / 3% re-arm logic.
+- 15m OI ANOMALY is enabled for closed UTC-aligned intervals and ALL/PROP routes.
+- The legacy rolling 20m TOP scheduler is disabled and retained only for rollback.
+- 60m/120m calculations remain observational/shadow analytics.
+- Durable closed 5m research telemetry remains enabled.
+
+## Canonical spot-backed futures universe (Task 28)
+
+The collector universe is resolved on the existing hourly symbol-cache refresh:
+active Binance USDⓈ-M USDT perpetual futures are intersected with active Binance
+Spot `TRADING` USDT markets. Resolution tries exact symbols first, then the small
+explicit aliases `DODOX → DODO` and `LUNA2 → LUNA`, then verified `1000` or
+`1000000` multiplier contracts whose transformed Spot pair actually exists.
+Unresolved futures-only contracts are excluded upstream of current-OI requests,
+rolling calculations, new telemetry, alerts, reports, and shadow analytics.
+Historical SQLite rows are not deleted and expire through normal retention.
+
+The refresh performs one bulk Futures exchange-info request and one bulk Spot
+exchange-info request, never per-symbol Spot polling. Startup fails closed to an
+empty collection universe if resolution fails; a later failure retains the
+last-known-good in-memory universe. Internal identity and PROP configuration
+remain futures symbols.
+
+Telegram keeps the existing linked futures ticker. When names differ, a plain
+Spot-base hint is appended, for example `1000PEPEUSDT · PEPE (S)`; no additional
+Spot hyperlink is created. Identical names such as `BTCUSDT` receive no suffix.
+
+Run the read-only discovery audit with:
+
+```powershell
+python -m tools.spot_universe_audit
+```
+
+The tool makes only the two exchange-info requests and does not request current
+OI, mutate SQLite, or send Telegram messages.
+
+## Key project paths
+
+- `oitgbot/services/spot_backed_universe.py`: deterministic resolver and LKG metadata.
+- `oitgbot/clients/binance_api.py`: Futures and Spot bulk exchange-info clients.
+- `oitgbot/services/current_oi_collector.py`: bounded per-symbol current-OI collection.
+- `oitgbot/services/report_formatter.py`: shared Telegram futures ticker formatting.
+- `tools/spot_universe_audit.py`: read-only live universe audit.
 
 ## РњРѕР¶Р»РёРІРѕСЃС‚С–
 
@@ -79,6 +127,7 @@ LOG_MAX_BYTES=5000000
 LOG_BACKUP_COUNT=5
 
 BINANCE_BASE_URL=https://fapi.binance.com
+BINANCE_SPOT_BASE_URL=https://api.binance.com
 HTTP_TIMEOUT=5
 HTTP_RETRIES=1
 
@@ -266,22 +315,18 @@ Get-Content .\rolling_oi.log -Tail 0 -Wait |
 
 ### Current production and roadmap
 
-Current production is **5m IMPULSE + 15m OI ANOMALY**. The 5m rolling OI
-IMPULSE remains unchanged. The 15m report uses closed UTC-aligned intervals,
-positive `OI15% >= +1%` eligibility, the same-symbol trailing 14-day classic
-Z baseline (minimum 96 valid prior observations), and existing ALL/PROP routing.
-Finite Z ranks first descending, then OI%, then symbol; PX% is context only.
+Before Task 28 is manually deployed, live production remains **5m IMPULSE + 15m
+OI ANOMALY** over the prior futures universe. Task 27 stabilization/observation
+is **PASS**: the completed live observation period found no material runtime
+failures. Task 28 changes only the upstream eligible universe and ticker display
+metadata; its code is **PASS / LIVE VALIDATION PENDING**.
 
-On 2026-09-05, commit `d2aa19735f7597cc7d518cf45526f9de4216fa9e` was manually
-cut over and validated in production: numeric-Z reports reached ALL and PROP
-for all 522 current symbols. Production enables 15m runtime and publication and
-disables the legacy 20m schedule with `ROLLING_OI_20M_TOP_ENABLED=0`. The 20m
-implementation remains in code as rollback compatibility.
-
-Task history: Task 25 implemented the opt-in runtime and staging publication.
-Task 26 corrects NEW semantics and rebaselines post-cutover documentation.
-Task 27 is production stabilization and observation, not a preplanned product
-change. Deferred directions remain unnumbered.
+Task history: Task 25 implemented opt-in runtime and staging publication; the
+2026-09-05 cutover enabled production 15m reports; Task 26 corrected NEW and
+rebaselined documentation; Task 27 completed production observation; Task 28
+adds the spot-backed universe. The legacy 20m scheduler stays disabled with
+`ROLLING_OI_20M_TOP_ENABLED=0`. Binance universe counts are dynamic and are not
+architecture constants.
 
 ### Planned research direction: OI Z-SCORE FLASH
 

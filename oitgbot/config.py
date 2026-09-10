@@ -75,6 +75,11 @@ class Settings:
             "BINANCE_BASE_URL", "https://fapi.binance.com"
         )
     )
+    binance_spot_base_url: str = field(
+        default_factory=lambda: os.environ.get(
+            "BINANCE_SPOT_BASE_URL", "https://api.binance.com"
+        )
+    )
     http_timeout: int = field(default_factory=lambda: _get_int("HTTP_TIMEOUT", "15"))
     http_retries: int = field(default_factory=lambda: _get_int("HTTP_RETRIES", "2"))
 

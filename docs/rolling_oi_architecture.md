@@ -1,8 +1,9 @@
 # Hybrid Rolling Open Interest Architecture
 
-Status: historical/current rolling architecture. Current production remains 5m
-IMPULSE plus scheduled 20m TOP. The approved but not-yet-implemented 15m
-replacement specification is `docs/15m_oi_anomaly_top_spec.md`.
+Status: historical/current rolling architecture. Current production is 5m
+IMPULSE plus 15m OI ANOMALY. The legacy scheduled 20m TOP is disabled and
+retained only for rollback. Task 28 spot-backed filtering is code-complete and
+awaits manual production deployment.
 
 This design replaces historical five-minute Open Interest buckets as the primary real-time signal source. It preserves the historical endpoint for diagnostics and shadow validation while building production signals from timestamped current OI samples and WebSocket mark prices.
 
@@ -20,6 +21,18 @@ The engine must:
 - remain fully testable without Binance or Telegram network access.
 
 Historical `openInterestHist` remains diagnostic-only after cutover. It must not be mixed silently with current `openInterest` samples because their fields and semantics differ.
+
+## Canonical market universe
+
+Task 28 resolves the existing hourly cache as active USDⓈ-M USDT perpetual
+futures intersected with active Binance Spot `TRADING` USDT markets. One bulk
+Futures exchange-info and one bulk Spot exchange-info request feed conservative
+exact, explicit-alias, and verified multiplier matching. The resulting futures
+symbols are the only symbols admitted to `PriceStateStore`, current-OI
+collection, `RollingOIStore`, research telemetry, production reports, shadow
+analytics, and rollback reports. Refresh failure never restores the unfiltered
+futures universe: startup stays empty and later failures keep the in-memory
+last-known-good result. Historical SQLite rows are untouched.
 
 ## Target architecture
 
@@ -73,7 +86,7 @@ Historical `openInterestHist` remains diagnostic-only after cutover. It must not
 | `RollingWindowCalculator` | Calculate quantity, derived USD, and aligned price changes | Latest sample, selected baseline, window definition | `RollingWindowResult` or explicit unavailable reason | Pure synchronous calculation, called on the event loop after a cycle | Invalid/zero baselines produce unavailable, never a false zero percent |
 | `AccumulationAnalyzer` | Describe 60m/120m accumulation shape without applying production thresholds | Rolling OI history and exact long-window result | Persistence, efficiency, drawdown, impulse concentration, and coverage | Pure synchronous calculation | Missing anchors reduce reported coverage; they are never treated as negative or zero samples |
 | `ImpulseStateMachine` | Detect threshold crossings and suppress repeats using hysteresis | Valid 5m rolling result per symbol | Durable-in-memory signal event and state transition | Event-loop owned; evaluated after healthy/degraded collection cycles | Signal state advances when an event is accepted, not according to Telegram success |
-| `TopReportService` | Read the rolling store on the existing 20-minute schedule and build TOP rows | Store snapshot and 20m calculations | Existing report-row shape | Short async scheduled job; no Binance collection | Skips report when market coverage is below the report threshold |
+| `TopReportService` | Rollback-only reader for the disabled 20-minute scheduler | Store snapshot and 20m calculations | Existing report-row shape | Short async scheduled job; no Binance collection | Skips report when market coverage is below the report threshold |
 | `ShadowComparisonService` | Compare meaningful legacy and rolling cases without driving Telegram | Legacy diagnostics and rolling results | `OI_SHADOW_COMPARE` logs/metrics | Enabled during migration; optional and budget-subordinate | Legacy failure does not affect the rolling collector |
 | Existing `ReportFormatter` | Preserve Telegram presentation | Adapted rolling rows | Message text | Reused | Formatting error affects one report |
 | Existing `TelegramSender` | Deliver prepared messages with existing retry behavior | Target and message | Send result/timing | Reused async boundary | Send failure does not restart collection or re-trigger a signal repeatedly |
@@ -539,9 +552,9 @@ eligible universe is pruned.
 
 ## 20-minute TOP behavior
 
-This section documents **current production behavior**, not the approved 15m
-target. The 20m TOP remains active until the future shadow-validation and
-cutover work specified in `15m_oi_anomaly_top_spec.md`.
+This section documents retained rollback compatibility. The 20m TOP scheduler
+is disabled in production with `ROLLING_OI_20M_TOP_ENABLED=0`; enabling it is a
+manual rollback action.
 
 TOP remains schedule-driven at the existing `minute=0,20,40`, `second=10` cadence. The job reads the latest store snapshot and calculates rolling 20m results; it never initiates a Binance OI collection.
 
@@ -617,7 +630,7 @@ Parsed limit windows, planned/observed use, reserve, state, optional work skippe
 
 Task 2 `OI_DIAG`/`OI_DIAG_SUMMARY` and Task 4 live probe remain available for legacy diagnosis.
 
-## Shadow mode and cutover
+## Historical shadow mode and cutover
 
 Migration runs both engines:
 
@@ -694,7 +707,7 @@ Start/stop WebSocket, collector, store, and comparison service safely alongside 
 
 Implemented as one application-owned `RollingOIShadowRuntime`. When enabled,
 it starts one mark-price stream, obtains runtime `REQUEST_WEIGHT` limits, reuses
-the legacy scheduler's cached eligible symbol universe, and begins natural-startup
+the shared cached eligible symbol universe (spot-backed after Task 28 deployment), and begins natural-startup
 30-second collection without five-minute boundary alignment. It evaluates
 5m/20m/60m/120m windows after successful insertions and emits bounded shadow
 candidates plus one cycle summary. Legacy 5m and 20m jobs retain all Telegram
@@ -794,7 +807,7 @@ Required tests:
 11. **Canonical sample timestamp:** per-request `observed_at_utc`; Binance `oi_exchange_time` is transaction-time diagnostic metadata and may repeat without collapsing observations.
 12. **Warm-up/restart strategy:** cold in-memory warm-up based on actual acceptable baseline availability; no historical/current semantic mixing.
 13. **5m alert re-arm strategy:** hysteresis at `0.60 * threshold` (3% for a 5% threshold), direct reversal supported, no fixed cooldown initially; shadow validation required.
-14. **20m TOP schedule behavior:** retain `minute=0,20,40`, `second=10`; read the rolling store and never trigger collection.
+14. **20m TOP rollback behavior:** when explicitly enabled, retain `minute=0,20,40`, `second=10`; read the rolling store and never trigger collection. It is disabled in production.
 15. **OI collector concurrency approach:** reuse the synchronous client through an application-owned bounded executor, default 20 workers; never block the event loop.
 16. **Rolling evaluation timing:** after each bounded full-market cycle in Phase 1; per-symbol immediate evaluation remains an optional later optimization.
 17. **Rate-limit safety policy:** runtime limit parsing, normal usage capped at 70%, at least 30% reserve, primary collector priority, 429 backoff, and 418 protection stop.

@@ -10,6 +10,7 @@ from .clients.telegram_sender import TelegramSender
 from .config import settings
 from .services.oi_diagnostics import utc_iso, utc_now
 from .services.report_formatter import ReportFormatter
+from .services.spot_backed_universe import SpotBackedUniverse
 
 log = logging.getLogger("oi_publisher")
 rolling_top_log = logging.getLogger("oitgbot.rolling.top")
@@ -22,26 +23,30 @@ class SchedulerJobs:
         telegram_sender: TelegramSender,
         report_formatter: ReportFormatter,
         shadow_runtime: object | None = None,
+        spot_backed_universe: SpotBackedUniverse | None = None,
     ) -> None:
         self.binance_api = binance_api
         self.telegram_sender = telegram_sender
         self.report_formatter = report_formatter
         self.shadow_runtime = shadow_runtime
+        self.spot_backed_universe = spot_backed_universe or SpotBackedUniverse()
         self._symbols_cache: list[str] = []
         self._symbols_cache_ts = 0.0
         self._symbols_cache_ttl = 3600
 
     def _get_symbols_cached(self) -> list[str]:
         now = time.time()
-        if self._symbols_cache and now - self._symbols_cache_ts < self._symbols_cache_ttl:
+        if now - self._symbols_cache_ts < self._symbols_cache_ttl:
             return self._symbols_cache
         try:
-            symbols = self.binance_api.get_perpetual_futures_symbols()
+            resolution = self.spot_backed_universe.refresh(self.binance_api)
+            symbols = list(resolution.symbols)
             self._symbols_cache = symbols
             self._symbols_cache_ts = now
-            log.info("Symbols cache refreshed: %d symbols", len(symbols))
+            log.info("Symbols cache refreshed: %d spot-backed symbols", len(symbols))
             return symbols
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
+            self._symbols_cache_ts = now
             if self._symbols_cache:
                 log.warning(
                     "Failed to refresh symbols cache, using stale cache (%d symbols): %s",
@@ -63,17 +68,13 @@ class SchedulerJobs:
             runtime = self.shadow_runtime
             snapshot_reader = getattr(runtime, "completed_top_snapshot", None)
             if snapshot_reader is None:
-                rolling_top_log.warning(
-                    "ROLLING_TOP_SKIP reason=runtime_unavailable"
-                )
+                rolling_top_log.warning("ROLLING_TOP_SKIP reason=runtime_unavailable")
                 return
 
             access: Any = await asyncio.to_thread(snapshot_reader)
             calculation_elapsed = time.perf_counter() - calculation_started
             if access.status == "unavailable":
-                rolling_top_log.info(
-                    "ROLLING_TOP_SKIP reason=snapshot_unavailable"
-                )
+                rolling_top_log.info("ROLLING_TOP_SKIP reason=snapshot_unavailable")
                 return
             if access.status == "stale":
                 rolling_top_log.warning(
@@ -112,9 +113,7 @@ class SchedulerJobs:
                 reverse=True,
             )
             rows_prop = [
-                result
-                for result in rows_all
-                if result.symbol in settings.prop_symbols
+                result for result in rows_all if result.symbol in settings.prop_symbols
             ]
             price_coverage = snapshot.price_ready_20m / snapshot.ready_20m
             rolling_top_log.info(
@@ -139,9 +138,7 @@ class SchedulerJobs:
                 )
                 return
 
-            empty_note = (
-                f"(no growth) rolling OI_20m < {settings.top_threshold:.2f}%"
-            )
+            empty_note = f"(no growth) rolling OI_20m < {settings.top_threshold:.2f}%"
             msg_all = self.report_formatter.format_rolling_top(
                 rows_all,
                 empty_note=empty_note if settings.send_empty_reports else None,
@@ -181,7 +178,7 @@ class SchedulerJobs:
                 len(rows_prop),
                 time.perf_counter() - publish_started,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001
             rolling_top_log.exception("ROLLING_TOP_PUBLISH status=failed")
         finally:
             job_finished_utc = utc_now()
