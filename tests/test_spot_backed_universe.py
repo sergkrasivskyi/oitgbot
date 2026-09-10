@@ -170,6 +170,35 @@ def test_initial_failure_never_falls_back_to_unfiltered_futures():
     assert jobs.get_symbols_cached() == []
 
 
+def test_initial_failure_retries_next_cycle_and_collects_only_resolved_symbols():
+    api = UniverseAPI()
+    api.fail_spot = True
+    jobs = jobs_for(api)
+    assert jobs.get_symbols_cached() == []
+
+    api.fail_spot = False
+    symbols = jobs.get_symbols_cached()
+    assert symbols == ["BTCUSDT"]
+
+    collector = CurrentOICollector(
+        api,
+        PriceStateStore(symbols),
+        RollingOIStore(),
+        RateLimitBudget((BinanceRateLimit("REQUEST_WEIGHT", "MINUTE", 1, 2400),)),
+        clock=lambda: NOW,
+    )
+
+    async def collect():
+        try:
+            return await collector.collect_cycle(symbols)
+        finally:
+            await collector.close()
+
+    result = asyncio.run(collect())
+    assert api.current_oi_calls == ["BTCUSDT"]
+    assert result.symbols_requested == 1
+
+
 def test_refresh_failure_retains_last_known_good_universe():
     api = UniverseAPI()
     universe = SpotBackedUniverse()

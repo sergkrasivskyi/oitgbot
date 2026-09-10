@@ -46,8 +46,8 @@ class SchedulerJobs:
             log.info("Symbols cache refreshed: %d spot-backed symbols", len(symbols))
             return symbols
         except Exception as exc:  # noqa: BLE001
-            self._symbols_cache_ts = now
             if self._symbols_cache:
+                self._symbols_cache_ts = now
                 log.warning(
                     "Failed to refresh symbols cache, using stale cache (%d symbols): %s",
                     len(self._symbols_cache),

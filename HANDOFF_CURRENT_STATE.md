@@ -30,8 +30,9 @@ active Spot USDT pair exists. Everything unresolved is excluded without guessing
 
 The filter is upstream of current-OI collection, rolling windows, new research
 telemetry, 5m alerts, 15m candidates, 60m/120m shadow analytics, and rollback
-20m reports. A startup resolution failure yields no collection universe. A later
-failure retains the last-known-good in-memory resolution. No disk cache or
+20m reports. A startup resolution failure yields no collection universe and is
+retried on the next normal collector cycle. A later failure retains the
+last-known-good in-memory resolution under the normal cache TTL. No disk cache or
 telemetry schema migration was added; historical excluded-symbol rows remain
 until normal retention removes them.
 

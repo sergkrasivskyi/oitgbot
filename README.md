@@ -1,137 +1,86 @@
-# OI TG Bot (Binance Futures → Telegram)
+# OI TG Bot
 
-The bot collects current Open Interest for a canonical set of Binance USDⓈ-M
-USDT perpetual futures, combines it with the existing mark-price stream, and
-publishes production 5m IMPULSE alerts and 15m OI ANOMALY reports to Telegram.
+OI TG Bot collects Binance current open interest and mark-price context for a canonical USD-M USDT perpetual universe, then publishes production alerts and reports to Telegram.
 
 ## Current production
 
-- 5m rolling OI IMPULSE is enabled with unchanged 5% trigger / 3% re-arm logic.
-- 15m OI ANOMALY is enabled for closed UTC-aligned intervals and ALL/PROP routes.
-- The legacy rolling 20m TOP scheduler is disabled and retained only for rollback.
-- 60m/120m calculations remain observational/shadow analytics.
-- Durable closed 5m research telemetry remains enabled.
+Production runs:
 
-## Canonical spot-backed futures universe (Task 28)
+- 5m rolling OI IMPULSE with the unchanged 5% trigger and 3% re-arm behavior.
+- 15m OI ANOMALY on closed UTC-aligned intervals, with ALL and PROP publication.
+- Durable closed 5m research telemetry in SQLite.
+- 60m and 120m observational/shadow analytics.
 
-The collector universe is resolved on the existing hourly symbol-cache refresh:
-active Binance USDⓈ-M USDT perpetual futures are intersected with active Binance
-Spot `TRADING` USDT markets. Resolution tries exact symbols first, then the small
-explicit aliases `DODOX → DODO` and `LUNA2 → LUNA`, then verified `1000` or
-`1000000` multiplier contracts whose transformed Spot pair actually exists.
-Unresolved futures-only contracts are excluded upstream of current-OI requests,
-rolling calculations, new telemetry, alerts, reports, and shadow analytics.
-Historical SQLite rows are not deleted and expire through normal retention.
+The legacy rolling 20m TOP scheduler is disabled with `ROLLING_OI_20M_TOP_ENABLED=0`. Its implementation remains only for rollback compatibility.
 
-The refresh performs one bulk Futures exchange-info request and one bulk Spot
-exchange-info request, never per-symbol Spot polling. Startup fails closed to an
-empty collection universe if resolution fails; a later failure retains the
-last-known-good in-memory universe. Internal identity and PROP configuration
-remain futures symbols.
+## Analytics
 
-Telegram keeps the existing linked futures ticker. When names differ, a plain
-Spot-base hint is appended, for example `1000PEPEUSDT · PEPE (S)`; no additional
-Spot hyperlink is created. Identical names such as `BTCUSDT` receive no suffix.
+The 5m signal uses rolling current OI quantity only. Collection runs every 30 seconds by default. Price and derived OI USD are display context, never trigger conditions. Persistent trigger state suppresses duplicate alerts for one continuous extreme across a restart; the rolling window itself warms naturally.
 
-Run the read-only discovery audit with:
+The 15m analyzer uses:
+
+- positive eligibility: `OI15 >= +1%`;
+- classic same-symbol Z15 from trailing 14-day history;
+- at least 96 prior valid observations;
+- ranking by finite Z descending, OI% descending, then symbol ascending;
+- PX% as context only;
+- production ALL and PROP routing.
+
+For an eligible candidate at interval `T`, NEW examines `[T - 12h, T)`. Any known prior eligible occurrence makes `is_new=False`; no prior eligible occurrence makes `is_new=True`. The current interval is excluded. Missing intervals, restarts, downtime, or coverage below 48/48 do not make NEW unknown. Telegram uses `🆕` on NEW rows and includes `🆕 NEW` only when a NEW row appears. Non-NEW rows have no marker.
+
+## Spot-backed futures universe
+
+The hourly refresh resolves active Binance USD-M USDT perpetual futures against active Binance Spot `TRADING` USDT markets:
+
+1. Exact futures/Spot match.
+2. Explicit `DODOX -> DODO` and `LUNA2 -> LUNA` aliases.
+3. Verified `1000` or `1000000` multiplier transformation when the transformed Spot market exists.
+4. Otherwise unresolved and excluded.
+
+The futures symbol remains the internal and PROP identity. Exclusion happens before current-OI requests, rolling calculations, new telemetry, alerts, reports, and shadow analytics. Existing SQLite history expires normally.
+
+Each refresh makes one bulk Futures and one bulk Spot exchange-info request, with no per-symbol Spot polling. Success uses the normal one-hour TTL. An initial failure with no last-known-good universe returns an empty universe and retries on the next normal collector cycle, about 30 seconds later. A later failure retains the non-empty last-known-good universe under the normal TTL. Failure never falls back to unfiltered futures.
+
+Telegram retains the linked futures ticker. A differing Spot base adds a plain-text hint such as `1000PEPEUSDT · PEPE (S)`, with no Spot link. Exact matches have no suffix.
+
+Read-only live audit:
 
 ```powershell
 python -m tools.spot_universe_audit
 ```
 
-The tool makes only the two exchange-info requests and does not request current
-OI, mutate SQLite, or send Telegram messages.
+It performs only the two exchange-info requests; it does not request current OI, mutate SQLite, or send Telegram.
 
-## Key project paths
+## Data paths
 
-- `oitgbot/services/spot_backed_universe.py`: deterministic resolver and LKG metadata.
-- `oitgbot/clients/binance_api.py`: Futures and Spot bulk exchange-info clients.
-- `oitgbot/services/current_oi_collector.py`: bounded per-symbol current-OI collection.
-- `oitgbot/services/report_formatter.py`: shared Telegram futures ticker formatting.
-- `tools/spot_universe_audit.py`: read-only live universe audit.
-
-## РњРѕР¶Р»РёРІРѕСЃС‚С–
-
-- **OI Binance HH** вЂ” вЂњС–РјРїСѓР»СЊСЃРёвЂќ: OI Р·Р° 5 С…РІРёР»РёРЅ >= `IMPULSE_THRESHOLD`
-- **OI Binance All** вЂ” С‚РѕРї РїРѕ СЂРѕСЃС‚Сѓ OI Р·Р° 20 С…РІРёР»РёРЅ >= `TOP_THRESHOLD`
-- Р¤РѕСЂРјР°С‚ Р·РІС–С‚Сѓ: `OI% | PX% | Ticker` (С‚С–РєРµСЂРё РєР»С–РєР°Р±РµР»СЊРЅС– в†’ Coinglass)
-- Р¤С–Р»СЊС‚СЂР°С†С–СЏ С–РЅСЃС‚СЂСѓРјРµРЅС‚С–РІ:
-  - `PERPETUAL`
-  - Р»РёС€Рµ `...USDT`
-  - Р»РёС€Рµ ASCII (Р±РµР· С–С”СЂРѕРіР»С–С„С–РІ)
-- РџР°СЂР°Р»РµР»СЊРЅРµ СЃРєР°РЅСѓРІР°РЅРЅСЏ (ThreadPool) РґР»СЏ С€РІРёРґРєРѕСЃС‚С–
-- РљРµС€ СЃРёРјРІРѕР»С–РІ (TTL 1 РіРѕРґРёРЅР°)
-- РЎС‚С–Р№РєС–СЃС‚СЊ РґРѕ РЅРµСЃС‚Р°Р±С–Р»СЊРЅРѕРіРѕ С–РЅС‚РµСЂРЅРµС‚Сѓ:
-  - Binance timeout/retry
-  - Telegram timeout + 1 retry
-  - РїРѕРјРёР»РєРё РІС–РґРїСЂР°РІРєРё РЅРµ РІР°Р»СЏС‚СЊ scheduler
-
----
-
-## РЎС‚СЂСѓРєС‚СѓСЂР° РїСЂРѕС”РєС‚Сѓ
-
+```text
+exchange info -> canonical universe -> current OI REST (~30s)
+                                      + mark-price WebSocket context
+                                      -> RollingOIStore
+                                         |- 5m IMPULSE -> Telegram
+                                         |- 15m ANOMALY -> Telegram
+                                         |- 60m/120m shadow
+                                         `- UTC 5m SQLite research bars
 ```
 
-.
-в”њв”Ђ oitgbot/
-в”‚  в”њв”Ђ app.py
-в”‚  в”њв”Ђ config.py
-в”‚  в”њв”Ђ logger_setup.py
-в”‚  в”њв”Ђ models.py
-в”‚  в”њв”Ђ scheduler_jobs.py
-в”‚  в”њв”Ђ clients/
-в”‚  в”‚  в”њв”Ђ binance_api.py
-в”‚  в”‚  в””в”Ђ telegram_sender.py
-в”‚  в””в”Ђ services/
-в”‚     в”њв”Ђ oi_scanner.py
-в”‚     в””в”Ђ report_formatter.py
-в”њв”Ђ run.py
-в”њв”Ђ requirements.txt
-в”њв”Ђ .env
-в”њв”Ђ Dockerfile
-в”њв”Ђ docker-compose.yml
-в””в”Ђ .dockerignore
+The SQLite LONG path uses `research_bars_5m` in `state/oi_research.sqlite3` by default, WAL mode, one background writer, and 14-day retention. It stores fixed UTC 5m OI/price OHLC bars, sample metadata, and closed/partial state. There is no historical Binance backfill. Telemetry failures are isolated from live collection and publication.
 
-````
+## Configuration
 
----
-
-## РќР°Р»Р°С€С‚СѓРІР°РЅРЅСЏ `.env`
-
-РЎС‚РІРѕСЂРё/РѕРЅРѕРІРё С„Р°Р№Р» `.env` РІ РєРѕСЂРµРЅС– РїСЂРѕС”РєС‚Сѓ:
+Keep secrets outside source control.
 
 ```env
 BOT_TOKEN=your_telegram_bot_token
-ALL_CHANNEL_ID=<your_all_channel_id>
-PROP_CHANNEL_ID=<your_prop_channel_id>
-TELEGRAM_PUBLISH_ENABLED=1
-
-# РЎРїРёСЃРѕРє "РѕР±СЂР°РЅРёС…" СЃРёРјРІРѕР»С–РІ РґР»СЏ РґСЂСѓРіРѕРіРѕ РєР°РЅР°Р»Сѓ (РѕРїС†С–Р№РЅРѕ)
+ALL_CHANNEL_ID=-100...
+PROP_CHANNEL_ID=-100...
 PROP_SYMBOLS=BTCUSDT,ETHUSDT,SOLUSDT
-
-IMPULSE_THRESHOLD=5.0
-TOP_THRESHOLD=1.0
-
-# РџРѕСЂРѕР¶РЅС– Р·РІС–С‚Рё (1 = РЅР°РґСЃРёР»Р°С‚Рё, 0 = РЅРµ РЅР°РґСЃРёР»Р°С‚Рё)
-SEND_EMPTY_REPORTS=0
-
-# РЇРєС‰Рѕ С–РјРїСѓР»СЊСЃС–РІ РЅРµРјР°, РјРѕР¶РЅР° СЃР»Р°С‚Рё fallback TOP-N Р·Р° OI_5m
-SHOW_TOP_WHEN_EMPTY=0
-TOP_WHEN_EMPTY_N=10
-
-DEBUG_OI=0
-
-LOG_FILE=bot.log
-ROLLING_OI_LOG_FILE=rolling_oi.log
-LOG_MAX_BYTES=5000000
-LOG_BACKUP_COUNT=5
+TELEGRAM_PUBLISH_ENABLED=1
 
 BINANCE_BASE_URL=https://fapi.binance.com
 BINANCE_SPOT_BASE_URL=https://api.binance.com
 HTTP_TIMEOUT=5
 HTTP_RETRIES=1
 
-# Rolling OI runtime (production 5m, live 15m, and legacy 20m rollback)
 ROLLING_OI_SHADOW_ENABLED=1
 ROLLING_OI_CADENCE_SECONDS=30
 ROLLING_OI_WORKERS=20
@@ -144,468 +93,130 @@ ROLLING_OI_5M_TRIGGER_PCT=5
 ROLLING_OI_5M_REARM_PCT=3
 ROLLING_OI_SIGNAL_STATE_FILE=rolling_oi_signal_state.json
 ROLLING_OI_SIGNAL_STATE_TTL_MINUTES=15
+
+OI_ANOMALY_15M_ENABLED=1
+OI_ANOMALY_15M_TELEGRAM_ENABLED=1
+OI_ANOMALY_15M_BASELINE_DAYS=14
+OI_ANOMALY_15M_MIN_HISTORY=96
+OI_ANOMALY_15M_ELIGIBILITY_PCT=1.0
+OI_ANOMALY_15M_NEW_LOOKBACK_HOURS=12
+OI_ANOMALY_15M_LOG_TOP_N=20
+
+ROLLING_OI_20M_TOP_ENABLED=0
 ROLLING_OI_20M_OBSERVATION_PCT=1
 ROLLING_OI_60M_OBSERVATION_PCT=3
 ROLLING_OI_120M_OBSERVATION_PCT=4
-ROLLING_OI_20M_TOP_ENABLED=0
 
-# Durable LONG research layer (enabled by default)
 RESEARCH_TELEMETRY_ENABLED=1
 RESEARCH_TELEMETRY_DB_PATH=state/oi_research.sqlite3
 RESEARCH_TELEMETRY_RETENTION_DAYS=14
-````
 
-`ROLLING_OI_OBSERVATION_MAX_AGE_SECONDS` controls freshness of the bot's local
-observation clock. The former `ROLLING_OI_MAX_OI_AGE_SECONDS` name is accepted
-as a compatibility fallback but no longer rejects present OI because Binance's
-transaction timestamp is old. `ROLLING_OI_TRANSACTION_AGE_WARNING_SECONDS`
-controls diagnostics only.
-
-The production 5m IMPULSE signal uses rolling current OI quantity only. It is
-evaluated after each rolling collection cycle (30 seconds by default), triggers
-at `ROLLING_OI_5M_TRIGGER_PCT` (5%), and re-arms at
-`ROLLING_OI_5M_REARM_PCT` (3%). A persistent positive or negative extreme
-produces one Telegram alert; REARM is diagnostic only and permits a later new
-crossing. Price and derived OI USD are optional display context, never trigger
-conditions.
-
-Recent per-symbol triggered state is written atomically to
-`ROLLING_OI_SIGNAL_STATE_FILE`. On restart it suppresses a duplicate alert for
-the same continuous extreme. Restored state expires after
-`ROLLING_OI_SIGNAL_STATE_TTL_MINUTES` (15 minutes by default) unless a valid
-rolling observation confirms it. Missing, corrupt, incompatible, or stale state
-starts safely. The rolling data window itself is never seeded from historical OI
-and still warms naturally.
-
-### FAST production vs LONG research data
-
-The production and research paths are deliberately independent:
-
-```text
-FAST: 30s RollingOIStore -> 5m IMPULSE / live 15m OI ANOMALY / 60m+120m shadow
-LONG: UTC 5m research bars -> SQLite -> offline 1h/2h/6h/12h/24h/48h/72h research
+LOG_FILE=bot.log
+ROLLING_OI_LOG_FILE=rolling_oi.log
+LOG_MAX_BYTES=5000000
+LOG_BACKUP_COUNT=5
 ```
 
-The LONG layer is enabled by default and writes to
-`state/oi_research.sqlite3`, with WAL mode, a single background writer, and
-14-day retention. Disable it with `RESEARCH_TELEMETRY_ENABLED=0`. Telemetry
-startup/write/observer failures are isolated and never stop or suppress the
-collector, price stream, production signals, TOP snapshots, or Telegram.
+`ROLLING_OI_OBSERVATION_MAX_AGE_SECONDS` governs local freshness; the old `ROLLING_OI_MAX_OI_AGE_SECONDS` name remains a compatibility fallback. Transaction age is diagnostic only.
 
-Each logical `symbol + bucket_start_utc` row represents a fixed, UTC-aligned
-five-minute bucket. OI open/high/low/close, count, and first/last observation
-timestamps come only from valid current-OI samples accepted by
-`RollingOIStore`. Price open/high/low/close, count, and first/last event
-timestamps come from every validated event on the existing all-market ~1s
-mark-price WebSocket, preserving intrabucket price highs/lows without another
-connection. Rows also carry `is_closed`; normal reads and exports include only
-closed buckets. A graceful shutdown may store the current bucket as an explicit
-partial row, which is safely merged if collection resumes in that bucket.
+## Development and operations
 
-The versioned SQLite table is `research_bars_5m`. Its persisted research fields
-are `symbol`, `bucket_start_utc`, `oi_open`, `oi_high`, `oi_low`, `oi_close`,
-`oi_sample_count`, `first_oi_observed_at_utc`, `last_oi_observed_at_utc`,
-`price_open`, `price_high`, `price_low`, `price_close`, `price_sample_count`,
-`first_price_event_at_utc`, `last_price_event_at_utc`, and `is_closed` (plus an
-internal update timestamp). No historical Binance backfill is performed.
-
-Export a recent closed-bar range without copying the database:
-
-```bash
-python -m tools.research_telemetry_export --hours 96 --output research-96h.csv.gz
-```
-
-Use repeated `--symbol BTCUSDT` options for optional filtering. The command is
-read-only and reports row count, first/last bucket, and output path.
-
-### Local live soak (development laptop)
-
-For a real-data development soak, use a separate research database; never mix
-it with the production database.
-The normal bot still uses public Binance REST and the existing all-market
-mark-price WebSocket, with unchanged production logic.
-
-Set these existing environment values in the laptop test environment:
-
-```env
-TELEGRAM_PUBLISH_ENABLED=0
-RESEARCH_TELEMETRY_ENABLED=1
-RESEARCH_TELEMETRY_DB_PATH=state/oi_research_test.sqlite3
-RESEARCH_TELEMETRY_RETENTION_DAYS=14
-```
-
-Production thresholds remain unchanged. Signals and reports are still calculated
-and logged, but nothing is sent to Telegram; research SQLite continues
-accumulating real Binance data.
-
-Then run the normal bot, wait at least 15-30 minutes, inspect it, and leave it
-running for several hours if practical:
+Windows:
 
 ```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 python run.py
+python -m pytest
+python -m ruff check .
+```
 
+Use `TELEGRAM_PUBLISH_ENABLED=0` and a separate `RESEARCH_TELEMETRY_DB_PATH` for a development soak. Read-only inspection and export:
+
+```powershell
 python -m tools.research_telemetry_status --db state/oi_research_test.sqlite3
-
 python -m tools.research_telemetry_export --db state/oi_research_test.sqlite3 --hours 4 --output research-test.csv.gz
 ```
 
-The status command is read-only: it makes no Binance or Telegram request. It
-reports database/schema details; closed and partial bar counts; OI/price sample
-quality; OI-only and price-only rows; integrity checks; and latest-closed-bucket
-coverage/sample counts. Re-run it during the soak to compare the newest closed
-bucket rather than relying only on historical totals.
+The export supports repeated `--symbol BTCUSDT` filters.
 
-```text
-Binance Current OI REST (~30s)
-              |
-              v
-        RollingOIStore
-             / \\
-            /   \\
-          5m             15m
-           |               |
-       IMPULSE       OI ANOMALY
-        5%/3%     OI15 >= +1%, Z15
-           |               |
-      immediate    closed UTC intervals
-           |               |
-           +----- Telegram ALL/PROP -----+
-```
-
-The legacy 20m TOP implementation is an in-memory rolling quantity ranking; its scheduler is disabled in current production and retained for rollback. After each
-fully successful collector cycle, the rolling runtime atomically publishes an
-immutable completed-cycle TOP snapshot. The scheduled TOP job reads only that
-cached snapshot, so a collector cycle still in progress cannot expose a partial
-universe. Partial, failed, skipped, or timed-out cycles retain the previous good
-snapshot. Missing and stale snapshots are skipped safely using the existing
-rolling observation freshness limit.
-
-When enabled only for rollback, TOP includes symbols at `TOP_THRESHOLD` (+1% by default), sorts them descending,
-and retains ALL/PROP delivery. Its PX% value comes from existing rolling price
-context and renders as `NA` when unavailable; price never gates an OI candidate.
-A cold restart requires a natural approximately 20-minute warm-up. During
-warm-up the scheduled report is skipped without a historical fallback or fake
-empty report.
-
-Neither the production 5m IMPULSE nor the 15m anomaly report adds a historical
-`openInterestHist` request. The rollback-only TOP job also makes no current-OI
-or kline request; it consumes the latest fresh completed collector snapshot
-produced at the unchanged 30-second cadence.
-Rolling 60m and 120m analytics remain observational only.
-Docker Compose persists the signal-state JSON under the host `state` directory.
-
-### Log files
-
-`bot.log` contains general application, scheduler, and Telegram diagnostics.
-`rolling_oi.log`
-contains the rolling OI engine, collector, mark-price stream, rolling analytics,
-production 5m signal/publish diagnostics, live 15m anomaly diagnostics,
-rollback-only rolling 20m TOP diagnostics, and
-remaining shadow analytics. Console output continues to show both streams.
+Docker:
 
 ```powershell
-Get-Content .\rolling_oi.log -Tail 0 -Wait
-
-Get-Content .\rolling_oi.log -Tail 0 -Wait |
-    Select-String -Pattern 'ROLLING_SIGNAL|ROLLING_SIGNAL_PUBLISH'
-
-Get-Content .\rolling_oi.log -Tail 0 -Wait |
-    Select-String -Pattern 'ROLLING_TOP_SNAPSHOT|ROLLING_TOP_SUMMARY|ROLLING_TOP_PUBLISH|ROLLING_TOP_SKIP'
+docker compose up -d --build
+docker compose logs -f
+docker ps
+docker compose restart
+docker compose down
 ```
 
-### Current production and roadmap
+Compose persists runtime state under the host `state` directory and shuts down gracefully.
 
-Before Task 28 is manually deployed, live production remains **5m IMPULSE + 15m
-OI ANOMALY** over the prior futures universe. Task 27 stabilization/observation
-is **PASS**: the completed live observation period found no material runtime
-failures. Task 28 changes only the upstream eligible universe and ticker display
-metadata; its code is **PASS / LIVE VALIDATION PENDING**.
+## Tablet runtime
 
-Task history: Task 25 implemented opt-in runtime and staging publication; the
-2026-09-05 cutover enabled production 15m reports; Task 26 corrected NEW and
-rebaselined documentation; Task 27 completed production observation; Task 28
-adds the spot-backed universe. The legacy 20m scheduler stays disabled with
-`ROLLING_OI_20M_TOP_ENABLED=0`. Binance universe counts are dynamic and are not
-architecture constants.
-
-### Planned research direction: OI Z-SCORE FLASH
-
-FLASH is not implemented or assigned a task number. It is a possible near-online
-1m research direction: positive OI anomalies with Z > +3 and negative OI
-anomalies with Z < -3. OI% and PX% would be context only, not gates; it carries
-no BUY/SELL, squeeze, or liquidation interpretation. Any future publication
-requires 1m telemetry, shadow validation, and anti-spam trigger/rearm design.
-## Tablet test release (Termux + proot Ubuntu)
-
-Runtime stack: Android -> Termux -> `proot-distro` Ubuntu -> this project ->
-`.venv` -> `run.py`. The tablet must use the same Telegram bot token and the
-same ALL and PROP destinations as the legacy tablet bot; do not create a test
-bot, test token, or separate channel.
-
-The tablet environment file lives outside Git, by default at
-`~/.config/oitgbot/env`. Create it with restrictive permissions where the
-environment supports them:
+The supported stack is Android, Termux, `proot-distro` Ubuntu, this repository, `.venv`, and `run.py`. Keep the environment outside Git at `~/.config/oitgbot/env`, or set `OITGBOT_ENV_FILE`.
 
 ```bash
 mkdir -p ~/.config/oitgbot
 chmod 700 ~/.config/oitgbot
 nano ~/.config/oitgbot/env
 chmod 600 ~/.config/oitgbot/env
-```
 
-Use the existing production values for `BOT_TOKEN`, `ALL_CHANNEL_ID`, and
-`PROP_CHANNEL_ID`. Set `TZ=Europe/Kyiv` there to retain the intended scheduler
-local-time behavior; rolling `observed_at_utc` semantics remain UTC. Do not put
-this file in the repository or upload it with diagnostics.
-
-Initial setup from Ubuntu (after cloning or updating this branch):
-
-```bash
 cd <project>
 bash deploy/tablet/setup-ubuntu.sh
 bash deploy/tablet/check-ubuntu.sh
 bash deploy/tablet/run-ubuntu.sh
 ```
 
-`setup-ubuntu.sh` creates/reuses `.venv`, installs the project requirements,
-keeps existing state intact, and performs an import smoke check.
-`check-ubuntu.sh` is local and non-destructive: it verifies the venv, imports,
-required environment-variable presence (never their values), writable log/state
-parents, timezone, Android shared-storage availability, and Git identity. It
-does not contact Binance, send Telegram, or alter rolling signal state.
-`run-ubuntu.sh` is the sole tablet runtime command and starts the existing
-`run.py` entrypoint with console output visible and normal file logging active.
-It only supplies absent defaults: 30-second cadence, 20 workers, 5% 5m trigger,
-and 3% rearm.
+Setup preserves state and performs an import check. Preflight is non-destructive and contacts neither Binance nor Telegram. At manual cutover, stop the prior process first. Allow about five minutes for IMPULSE warm-up and the next closed 15m boundary for ANOMALY.
 
-### Tablet cutover and warm-up
-
-1. Stop the old legacy bot manually; do not intentionally run both production
-   bots in parallel.
-2. Confirm it is gone, for example: `ps -ef | grep -E '[p]ython.*run.py'`.
-3. Update/deploy this rolling version, run the preflight check, then start it.
-4. Inspect `bot.log` and `rolling_oi.log` for startup and collector health.
-5. Allow natural warm-up before evaluating output: about 5 minutes for 5m
-   IMPULSE and the next closed 15m interval for OI ANOMALY. The collector starts
-   immediately.
-6. Verify the normal Telegram output in the existing ALL/PROP destinations.
-
-The rolling market-history store is deliberately not persisted or seeded from
-historical OI. The separate `rolling_oi_signal_state.json` is persistent and
-may suppress duplicate active 5m extremes across a restart for its configured
-15-minute TTL; normal setup and run never reset it.
-
-### Tablet logs and export
-
-Application logs remain in the project/runtime location, never continuously in
-Android shared storage. `bot.log` holds startup, scheduler, general application
-and Telegram events. `rolling_oi.log` holds the price stream, rate-limit budget,
-collector summaries, rolling analytics/signals, 15m anomaly diagnostics,
-rollback-only 20m TOP diagnostics, and signal
-state diagnostics. Each uses the existing rotating-file configuration: 5 MB per
-file with five retained backups by default.
-
-While the bot is still running, create an uploadable snapshot with:
+Export logs without stopping the process:
 
 ```bash
-cd <project>
 bash deploy/tablet/collect-logs.sh
 ```
 
-It snapshots only active `bot.log`/`rolling_oi.log` files, every existing
-rotation of both logs, and `rolling_oi_signal_state.json` into staging before creating
-`oi-bot-logs-YYYYMMDD-HHMMSS.zip`. The archive also has a no-secret
-`runtime_info.txt` with timestamp/timezone, Git identity/status, Python/runtime
-details, file sizes, state presence, process count, and disk space.
-The research SQLite database and its WAL/SHM files are deliberately excluded;
-use the research telemetry export command when research data is needed.
+The archive contains active and rotated logs, signal state, and a no-secret runtime summary. Research SQLite/WAL/SHM files are excluded. The preferred destination is `/sdcard/Download/OI-bot-logs`, with `/storage/emulated/0/Download/OI-bot-logs` as fallback.
 
-The primary destination is `/sdcard/Download/OI-bot-logs`; the fallback is
-`/storage/emulated/0/Download/OI-bot-logs`. The script requires an existing
-writable Downloads parent and fails with a clear Termux shared-storage message
-if neither is available. It never moves, deletes, pauses, or resets live logs
-or state. Select the resulting ZIP from Android Downloads and upload it to
-ChatGPT for analysis. A Telegram `/logs` command is only a possible future
-convenience, not part of this release.
+## Logs
 
-### РџРѕСЏСЃРЅРµРЅРЅСЏ РєР»СЋС‡РѕРІРёС… РїР°СЂР°РјРµС‚СЂС–РІ
-
-* `ROLLING_OI_5M_TRIGGER_PCT` / `ROLLING_OI_5M_REARM_PCT` вЂ” production 5m hysteresis
-* `TOP_THRESHOLD` вЂ” РїРѕСЂС–Рі OI% Р·Р° 20 С…РІ (Р·РІС–С‚ All)
-* `SEND_EMPTY_REPORTS=1` вЂ” РЅР°РґСЃРёР»Р°С‚Рё РїРѕРІС–РґРѕРјР»РµРЅРЅСЏ РЅР°РІС–С‚СЊ СЏРєС‰Рѕ СЃРёРіРЅР°Р»С–РІ РЅРµРјР° (Р· РїСЂРёРјС–С‚РєРѕСЋ)
-* `IMPULSE_THRESHOLD` / `SHOW_TOP_WHEN_EMPTY` вЂ” retained legacy configuration; not production 5m inputs
-* `HTTP_TIMEOUT/HTTP_RETRIES` вЂ” РІР°Р¶Р»РёРІРѕ РґР»СЏ РЅРµСЃС‚Р°Р±С–Р»СЊРЅРѕРіРѕ С–РЅС‚РµСЂРЅРµС‚Сѓ
-
----
-
-## Р›РѕРєР°Р»СЊРЅРёР№ Р·Р°РїСѓСЃРє (Р±РµР· Docker)
-
-### 1) Р’СЃС‚Р°РЅРѕРІРёС‚Рё Р·Р°Р»РµР¶РЅРѕСЃС‚С–
-
-**PowerShell (Windows):**
+- `bot.log`: startup, scheduler, application, and Telegram.
+- `rolling_oi.log`: universe, collector, price, signal, anomaly, telemetry, shadow, and rollback-only 20m diagnostics.
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+Get-Content .\rolling_oi.log -Tail 0 -Wait
+Get-Content .\rolling_oi.log -Tail 0 -Wait |
+    Select-String -Pattern 'ROLLING_SIGNAL|OI_ANOMALY_15M|SPOT_BACKED_UNIVERSE'
 ```
 
-### 2) Р—Р°РїСѓСЃС‚РёС‚Рё
+For `Chat not found`, verify the `-100...` channel IDs and bot posting permission.
 
-```powershell
-python run.py
-```
+## Key paths
 
----
+- `oitgbot/app.py`: lifecycle and runtime wiring.
+- `oitgbot/scheduler_jobs.py`: jobs and universe cache policy.
+- `oitgbot/clients/binance_api.py`: Binance REST clients.
+- `oitgbot/services/spot_backed_universe.py`: deterministic resolver.
+- `oitgbot/services/current_oi_collector.py`: current-OI collection.
+- `oitgbot/services/report_formatter.py`: Telegram formatting.
+- `tools/spot_universe_audit.py`: read-only universe audit.
+- `deploy/tablet/`: tablet operations.
 
-## Docker (СЂРµРєРѕРјРµРЅРґРѕРІР°РЅРѕ)
+## Task history and roadmap
 
-### РџРµСЂРµРґСѓРјРѕРІРё
+- Task 25 implemented opt-in live 15m runtime and staging publication.
+- On 2026-09-05, `d2aa19735f7597cc7d518cf45526f9de4216fa9e` was manually cut over and validated.
+- Task 26 corrected NEW semantics and rebaselined documentation.
+- Task 27 production stabilization and observation is **PASS**.
+- Task 28 spot-backed universe and hints is **CODE PASS / LIVE VALIDATION PENDING**.
 
-* Р’СЃС‚Р°РЅРѕРІР»РµРЅРёР№ **Docker Desktop**
-* РЈРІС–РјРєРЅРµРЅРёР№ Р°РІС‚РѕР·Р°РїСѓСЃРє Docker Desktop:
-  **Settings в†’ General в†’ Start Docker Desktop when you log in**
+Before Task 28 deployment, production remains 5m IMPULSE plus 15m OI ANOMALY over the previously deployed universe. Task 28 does not change analytics math, thresholds, routing, cadence, subscriptions, or the production 20m flag.
 
-### Р—Р°РїСѓСЃРє Сѓ С„РѕРЅС–
+### Planned research direction: OI Z-SCORE FLASH
 
-```powershell
-docker compose up -d --build
-```
+FLASH is unnumbered and unimplemented. It is a possible near-online 1m research direction: positive OI change with Z > +3 and negative anomalies at Z < -3. OI% and PX% would be context only. It has no BUY/SELL, squeeze, or liquidation interpretation. Publication requires 1m telemetry, shadow validation, and anti-spam trigger/re-arm design.
 
-### Р›РѕРіРё
+## Security
 
-```powershell
-docker compose logs -f
-```
-
-Р’РёР№С‚Рё Р· РїРµСЂРµРіР»СЏРґСѓ Р»РѕРіС–РІ: `Ctrl + C` (РєРѕРЅС‚РµР№РЅРµСЂ РїСЂРѕРґРѕРІР¶СѓС” РїСЂР°С†СЋРІР°С‚Рё)
-
-### РџРµСЂРµРІС–СЂРёС‚Рё СЃС‚Р°С‚СѓСЃ
-
-```powershell
-docker ps
-```
-
-### РџРµСЂРµР·Р°РїСѓСЃРє
-
-```powershell
-docker restart oitgbot
-```
-
-Р°Р±Рѕ:
-
-```powershell
-docker compose restart
-```
-
-### Р—СѓРїРёРЅРёС‚Рё С– РїСЂРёР±СЂР°С‚Рё РєРѕРЅС‚РµР№РЅРµСЂ
-
-```powershell
-docker compose down
-```
-
-### РџС–СЃР»СЏ Р·РјС–РЅ Сѓ РєРѕРґС– (РїРµСЂРµР±СѓРґСѓРІР°С‚Рё РѕР±СЂР°Р·)
-
-```powershell
-docker compose up -d --build
-```
-
----
-
-## РђРІС‚РѕРІС–РґРЅРѕРІР»РµРЅРЅСЏ РїС–СЃР»СЏ СЂРµР±СѓС‚Сѓ / РїР°РґС–РЅРЅСЏ
-
-РЈ `docker-compose.yml` РІРёРєРѕСЂРёСЃС‚РѕРІСѓС”С‚СЊСЃСЏ:
-
-* `restart: unless-stopped`
-* `stop_signal: SIGTERM`
-* `stop_grace_period: 20s`
-
-Р¦Рµ РѕР·РЅР°С‡Р°С”:
-
-* РїС–СЃР»СЏ РїРµСЂРµР·Р°РІР°РЅС‚Р°Р¶РµРЅРЅСЏ Windows С– СЃС‚Р°СЂС‚Сѓ Docker Desktop РєРѕРЅС‚РµР№РЅРµСЂ РїС–РґРЅС–РјРµС‚СЊСЃСЏ СЃР°Рј
-* РїСЂРё `docker stop` Р±РѕС‚ Р·Р°РІРµСЂС€СѓС”С‚СЊСЃСЏ РєРѕСЂРµРєС‚РЅРѕ (graceful shutdown)
-
----
-
-## Р РѕР·РєР»Р°Рґ (cron)
-
-* **5m IMPULSE**: rolling collector cycle, every 30 seconds by default (no cron)
-* **15m OI ANOMALY**: UTC-aligned closed intervals, with ALL/PROP publication
-* **20m TOP**: legacy rollback scheduler, disabled in production with
-  `ROLLING_OI_20M_TOP_ENABLED=0`
-
----
-
-## РўРёРїРѕРІС– РїСЂРѕР±Р»РµРјРё
-
-### `Chat not found`
-
-* РЅРµРїСЂР°РІРёР»СЊРЅРёР№ `ALL_CHANNEL_ID` / `PROP_CHANNEL_ID`
-* Р±РѕС‚ РЅРµ РґРѕРґР°РЅРёР№ Сѓ РєР°РЅР°Р» Р°Р±Рѕ РЅРµ РјР°С” РїСЂР°РІ РїРёСЃР°С‚Рё
-* ID РјР°С” Р±СѓС‚Рё Сѓ С„РѕСЂРјР°С‚С– `-100...`
-
-### `Telegram send timeout`
-
-Р†РЅРѕРґС– Telegram РїСЂРёР№РјР°С” РїРѕРІС–РґРѕРјР»РµРЅРЅСЏ, Р°Р»Рµ РІС–РґРїРѕРІС–РґСЊ РїСЂРёС…РѕРґРёС‚СЊ РїС–Р·РЅРѕ в†’ РєР»С–С”РЅС‚ Р±Р°С‡РёС‚СЊ `TimedOut`.
-РЈ РЅР°СЃ С”:
-
-* Р·Р±С–Р»СЊС€РµРЅС– С‚Р°Р№РјР°СѓС‚Рё РІ `Application.builder()`
-* 1 РїРѕРІС‚РѕСЂРЅР° СЃРїСЂРѕР±Р° РІ `TelegramSender`
-
-### РќРµРјР° С–РЅС‚РµСЂРЅРµС‚Сѓ
-
-РљРѕРЅС‚РµР№РЅРµСЂ РЅРµ РІРїР°РґРµ. РњРѕР¶СѓС‚СЊ Р±СѓС‚Рё РїРѕРјРёР»РєРё Сѓ Р»РѕРіР°С…. РљРѕР»Рё С–РЅС‚РµСЂРЅРµС‚ РїРѕРІРµСЂРЅРµС‚СЊСЃСЏ вЂ” Р±РѕС‚ РїСЂРѕРґРѕРІР¶РёС‚СЊ СЂРѕР±РѕС‚Сѓ.
-
----
-
-## РљРѕСЂРёСЃРЅС– РєРѕРјР°РЅРґРё (С€РїР°СЂРіР°Р»РєР°)
-
-```powershell
-# СЃС‚Р°СЂС‚
-docker compose up -d
-
-# СЃС‚Р°СЂС‚ Р· РїРµСЂРµР±СѓРґРѕРІРѕСЋ
-docker compose up -d --build
-
-# Р»РѕРіРё
-docker compose logs -f
-
-# СЃС‚Р°С‚СѓСЃ
-docker ps
-
-# РїРµСЂРµР·Р°РїСѓСЃРє
-docker restart oitgbot
-
-# СЃС‚РѕРї
-docker compose down
-```
-
----
-
-## Р‘РµР·РїРµРєР°
-
-* `.env` РЅРµ РґРѕРґР°РІР°Р№ Сѓ git
-* `BOT_TOKEN` С‚СЂРёРјР°Р№ РїСЂРёРІР°С‚РЅРёРј
-
-```
-```
-
-## Production 15m OI anomaly
-
-The 15m analyzer is live in production after the validated 2026-09-05 cutover.
-Its runtime bootstraps a bounded 14-day SQLite snapshot, establishes a
-non-published startup reference, and then reads only newly closed UTC-aligned
-15m intervals. It does not replay historical reports or add Binance requests.
-The active production deployment enables 15m runtime and Telegram publication;
-the legacy 20m scheduler is disabled there with
-`ROLLING_OI_20M_TOP_ENABLED=0`, while its code remains available for rollback.
-
-`NEW` uses exactly `[T - 12h, T)`: an eligible current candidate is NEW when no
-prior eligible same-symbol candidate is known in that window. Missing intervals,
-restart gaps, downtime, and coverage below 48/48 do not change this result.
-The current interval is excluded. Telegram prefixes NEW rows with `рџ†•` and adds
-`рџ†• NEW` only when at least one NEW row exists; there is no вЏі status marker.
-
-For manual configuration, use the existing production credentials and explicitly
-set `OI_ANOMALY_15M_ENABLED=1`, `OI_ANOMALY_15M_TELEGRAM_ENABLED=1`, and
-`ROLLING_OI_20M_TOP_ENABLED=0`. Do not place credentials in source control.
+Never commit `.env`, Telegram tokens, channel credentials, private exports, or production SQLite files.
