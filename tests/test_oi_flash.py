@@ -314,6 +314,24 @@ class RecordingPublisher:
         return tuple(True for _ in events)
 
 
+class ControlledCooldownStore(OIFlashResearchStore):
+    def __init__(self, path) -> None:
+        super().__init__(path)
+        self.fail_load = True
+        self.load_calls = 0
+        self.record_calls = 0
+
+    def load_last_accepted(self):
+        self.load_calls += 1
+        if self.fail_load:
+            raise sqlite3.OperationalError("database unavailable")
+        return super().load_last_accepted()
+
+    def record_crossings(self, decisions):
+        self.record_calls += 1
+        return super().record_crossings(decisions)
+
+
 class OIFlashRuntimeTests(IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
@@ -362,6 +380,95 @@ class OIFlashRuntimeTests(IsolatedAsyncioTestCase):
         )
         await restarted.stop()
         self.assertEqual([], restarted_publisher.calls)
+
+    def _runtime_with_store(self, store, publisher):
+        return OIFlashRuntime(
+            db_path=str(store.path),
+            store=store,
+            telemetry=NoopTelemetry(),  # type: ignore[arg-type]
+            publisher=publisher,
+        )
+
+    async def test_failed_startup_restore_recovers_and_suppresses_same_direction(
+        self,
+    ) -> None:
+        self.store.record_crossings(((candidate(NOW, value=3.4), False),))
+        store = ControlledCooldownStore(self.path)
+        publisher = RecordingPublisher()
+        runtime = self._runtime_with_store(store, publisher)
+
+        with self.assertLogs("oitgbot.rolling.oi_flash", level="WARNING"):
+            await runtime.start()
+        store.fail_load = False
+        await runtime._process_candidates(
+            (candidate(NOW + timedelta(minutes=7), value=3.6),)
+        )
+        await runtime.stop()
+
+        self.assertEqual(2, store.load_calls)
+        self.assertEqual([], publisher.calls)
+        with self.store.connect(read_only=True) as connection:
+            rows = connection.execute(
+                "SELECT suppressed_by_cooldown FROM flash_events ORDER BY id"
+            ).fetchall()
+        self.assertEqual([0, 1], [row[0] for row in rows])
+
+    async def test_failed_startup_restore_recovers_empty_and_accepts(self) -> None:
+        path = Path(self.tempdir.name) / "empty-recovery.sqlite3"
+        store = ControlledCooldownStore(path)
+        publisher = RecordingPublisher()
+        runtime = self._runtime_with_store(store, publisher)
+
+        with self.assertLogs("oitgbot.rolling.oi_flash", level="WARNING"):
+            await runtime.start()
+        store.fail_load = False
+        await runtime._process_candidates((candidate(),))
+        await runtime._process_candidates(
+            (candidate(NOW + timedelta(minutes=16), value=3.5),)
+        )
+        await runtime.stop()
+
+        self.assertEqual(2, store.load_calls)
+        self.assertEqual(2, store.record_calls)
+        self.assertEqual(2, len(publisher.calls))
+
+    async def test_unknown_cooldown_blocks_publication_when_reload_still_fails(
+        self,
+    ) -> None:
+        store = ControlledCooldownStore(
+            Path(self.tempdir.name) / "unavailable.sqlite3"
+        )
+        publisher = RecordingPublisher()
+        runtime = self._runtime_with_store(store, publisher)
+
+        with self.assertLogs("oitgbot.rolling.oi_flash", level="WARNING"):
+            await runtime.start()
+        with self.assertLogs("oitgbot.rolling.oi_flash", level="WARNING") as logs:
+            await runtime._process_candidates((candidate(),))
+        await runtime.stop()
+
+        self.assertEqual(2, store.load_calls)
+        self.assertEqual(0, store.record_calls)
+        self.assertEqual([], publisher.calls)
+        self.assertTrue(any("cooldown_state_unknown" in line for line in logs.output))
+
+    async def test_recovered_restore_keeps_opposite_direction_independent(self) -> None:
+        self.store.record_crossings(((candidate(NOW, value=3.4), False),))
+        store = ControlledCooldownStore(self.path)
+        publisher = RecordingPublisher()
+        runtime = self._runtime_with_store(store, publisher)
+
+        with self.assertLogs("oitgbot.rolling.oi_flash", level="WARNING"):
+            await runtime.start()
+        store.fail_load = False
+        await runtime._process_candidates(
+            (candidate(NOW + timedelta(minutes=7), value=-3.2),)
+        )
+        await runtime.stop()
+
+        self.assertEqual(2, store.load_calls)
+        self.assertEqual(1, len(publisher.calls))
+        self.assertEqual("negative", publisher.calls[0][0].direction.value)
 
     async def test_suppressed_crossing_and_publish_state_are_persisted(self) -> None:
         await self.runtime._process_candidates((candidate(),))

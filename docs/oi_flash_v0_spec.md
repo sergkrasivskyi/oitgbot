@@ -35,7 +35,11 @@ Cooldown is 900 seconds per `(symbol, direction)`. Same-direction crossings
 inside the interval are stored but suppressed. A crossing at exactly 900 seconds
 is accepted. Opposite direction is independent and does not reset the prior
 direction. Every accepted non-suppressed event establishes cooldown even if
-Telegram fails; startup restores the latest accepted time from SQLite.
+Telegram fails. Startup restores the latest accepted time from SQLite and tracks
+whether that restore succeeded separately from the restored map, for which empty is
+a valid loaded state. After a startup restore failure, an otherwise qualifying
+decision retries the restore lazily. FLASH decisions, event insertion, and Telegram
+remain fail-closed until a restore succeeds; recovered state is used immediately.
 
 Accepted events in one cycle are sorted by absolute OI% descending and symbol
 ascending, then batched/chunked to the dedicated FLASH chat through the existing

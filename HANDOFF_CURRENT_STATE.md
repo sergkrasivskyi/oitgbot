@@ -10,10 +10,10 @@ rollback.
 
 Task 29 implements opt-in 1m OI FLASH v0 and dedicated research telemetry. Its
 status is **CODE PASS / LIVE VALIDATION PENDING** after local verification. The
-implementation commit is repository HEAD with message
-"feat: add 1m oi flash research pipeline"; the immutable SHA is in the completion
-report and available with git rev-parse HEAD. Do not mark LIVE PASS until the
-laptop/tablet checklist succeeds.
+base implementation commit is `e53f37bf7150e3ebdef23e969526a069af71d7b7`
+with message "feat: add 1m oi flash research pipeline". The cooldown-recovery
+addendum is also CODE PASS. Do not mark LIVE PASS until the laptop/tablet
+checklist succeeds.
 
 ## Task 29 live semantics
 
@@ -36,7 +36,10 @@ Cooldown is 900 seconds per (futures symbol, direction). The opposite direction
 bypasses and does not reset the other direction. Elapsed time exactly 900 seconds
 is allowed. Cooldown begins with every durably accepted event regardless of
 Telegram success and is reconstructed from non-suppressed flash_events rows
-after restart.
+after restart. Startup distinguishes a successfully restored empty cooldown map
+from an unavailable cooldown state. After a failed startup restore, qualifying
+FLASH decisions retry lazily and remain fail-closed—with no event acceptance or
+Telegram send—until SQLite restoration succeeds.
 
 ## Telegram and failure boundary
 
@@ -107,8 +110,8 @@ LONG/SHORT interpretation, PX eligibility, or complex re-arm logic.
 
 ## Validation and next steps
 
-Local CODE PASS verification: focused Task 29 tests passed 21 tests plus 9
-subtests; the full repository passed 318 tests plus 60 subtests. Ruff,
+Local CODE PASS verification: focused FLASH runtime tests passed 23 tests plus
+9 subtests; the full repository passed 322 tests plus 60 subtests. Ruff,
 compile/import sanity, CLI coverage, documentation scans, and git diff --check
 also passed before commit.
 

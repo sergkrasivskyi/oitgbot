@@ -50,13 +50,15 @@ class OIFlashRuntime:
         )
         self.publisher = publisher
         self._last_accepted: dict[tuple[str, object], datetime] = {}
+        self._cooldown_ready = False
         self._tasks: set[asyncio.Task[Any]] = set()
         self._decision_lock = asyncio.Lock()
 
     async def start(self) -> None:
         try:
             await asyncio.to_thread(self.telemetry.start)
-            self._last_accepted = await asyncio.to_thread(self.store.load_last_accepted)
+            if not await self._ensure_cooldown_ready(stage="startup"):
+                return
             logger.info(
                 "OI_FLASH_STATUS enabled=true telegram_enabled=%s window_s=%.0f "
                 "baseline_max_lag_s=%.0f threshold_pct=%.2f cooldown_s=%.0f "
@@ -72,6 +74,29 @@ class OIFlashRuntime:
             )
         except Exception:
             logger.exception("OI_FLASH_STATUS status=degraded reason=start_failed")
+
+    async def _ensure_cooldown_ready(self, *, stage: str) -> bool:
+        if self._cooldown_ready:
+            return True
+        try:
+            restored = await asyncio.to_thread(self.store.load_last_accepted)
+        except Exception:  # noqa: BLE001 - isolate the durable-store boundary
+            logger.warning(
+                "OI_FLASH_STATUS status=degraded reason=cooldown_restore_failed "
+                "stage=%s decisions_blocked=true",
+                stage,
+            )
+            return False
+        self._last_accepted = restored
+        self._cooldown_ready = True
+        if stage != "startup":
+            logger.info(
+                "OI_FLASH_STATUS status=cooldown_ready stage=%s "
+                "restored_cooldowns=%d",
+                stage,
+                len(restored),
+            )
+        return True
 
     def set_eligible_symbols(self, symbols: Sequence[str]) -> None:
         self.telemetry.set_eligible_symbols(symbols)
@@ -116,6 +141,13 @@ class OIFlashRuntime:
 
     async def _process_candidates(self, candidates: Sequence[OIFlashCandidate]) -> None:
         async with self._decision_lock:
+            if not await self._ensure_cooldown_ready(stage="decision"):
+                logger.warning(
+                    "OI_FLASH_STATUS status=skipped reason=cooldown_state_unknown "
+                    "events=%d telegram_blocked=true",
+                    len(candidates),
+                )
+                return
             decisions = tuple(
                 (candidate, self._is_suppressed(candidate)) for candidate in candidates
             )
