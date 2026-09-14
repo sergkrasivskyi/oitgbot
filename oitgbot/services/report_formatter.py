@@ -117,6 +117,40 @@ class ReportFormatter:
             f"\u26a1 {self._fmt_signed(event.oi_quantity_change_pct)} | {price} | {ticker}"
         )
 
+    def format_oi_flash(self, events) -> str:
+        """Format pre-sorted FLASH events for the dedicated channel."""
+        lines = ["\u26a1 OI FLASH \u00b7 1m", ""]
+        for event in events:
+            price = (
+                f"{self._fmt_signed(event.px_pct)}%"
+                if event.px_pct is not None
+                else "NA"
+            )
+            lines.append(
+                f"OI {self._fmt_signed(event.oi_pct)}% | PX {price} | "
+                f"{self._ticker(event.symbol)}"
+            )
+        return "\n".join(lines).strip()
+
+    def format_oi_flash_chunks(self, events, *, max_length: int = 4096):
+        if max_length < 1:
+            raise ValueError("max_length must be positive")
+        ordered = sorted(events, key=lambda item: (-abs(item.oi_pct), item.symbol))
+        chunks = []
+        pending = []
+        for event in ordered:
+            proposal = self.format_oi_flash((*pending, event))
+            if pending and len(proposal) > max_length:
+                chunks.append(tuple(pending))
+                pending = [event]
+            else:
+                pending.append(event)
+        if pending:
+            chunks.append(tuple(pending))
+        if any(len(self.format_oi_flash(chunk)) > max_length for chunk in chunks):
+            raise ValueError("max_length is too small for one FLASH row")
+        return tuple(chunks)
+
     def format_rolling_top(
         self,
         results: list[RollingOIWindowResult],

@@ -16,6 +16,8 @@ from .logger_setup import setup_logging
 from .scheduler_jobs import SchedulerJobs
 from .services.oi_anomaly_15m_publisher import OIAnomaly15mPublisher
 from .services.oi_anomaly_15m_runtime import OIAnomaly15mRuntime
+from .services.oi_flash_publisher import OIFlashPublisher
+from .services.oi_flash_runtime import OIFlashRuntime
 from .services.report_formatter import ReportFormatter
 from .services.rolling_impulse_publisher import RollingImpulsePublisher
 from .services.rolling_oi_shadow_runtime import RollingOIShadowRuntime
@@ -42,6 +44,30 @@ def build_shadow_runtime(
         if telegram_sender is not None and report_formatter is not None
         else None
     )
+    flash_runtime = None
+    if settings.oi_flash_enabled:
+        flash_publisher = (
+            OIFlashPublisher(
+                telegram_sender,
+                report_formatter,
+                chat_id=settings.oi_flash_telegram_chat_id,
+                max_message_length=settings.max_tg_len,
+            )
+            if settings.oi_flash_telegram_enabled
+            and telegram_sender is not None
+            and report_formatter is not None
+            else None
+        )
+        flash_runtime = OIFlashRuntime(
+            db_path=settings.oi_flash_research_db_path,
+            window_seconds=settings.oi_flash_window_seconds,
+            threshold_pct=settings.oi_flash_threshold_pct,
+            baseline_max_lag_seconds=settings.oi_flash_baseline_max_lag_seconds,
+            cooldown_seconds=settings.oi_flash_cooldown_seconds,
+            retention_days=settings.oi_flash_research_retention_days,
+            price_max_age_seconds=settings.rolling_oi_price_max_age_seconds,
+            publisher=flash_publisher,
+        )
     return RollingOIShadowRuntime(
         binance_api,
         jobs.get_symbols_cached,
@@ -67,6 +93,7 @@ def build_shadow_runtime(
         research_telemetry_enabled=settings.research_telemetry_enabled,
         research_db_path=settings.research_telemetry_db_path,
         research_retention_days=settings.research_telemetry_retention_days,
+        flash_runtime=flash_runtime,
     )
 
 
@@ -185,6 +212,10 @@ async def main_async() -> None:
             assert shadow_runtime is not None
             jobs.shadow_runtime = shadow_runtime
             await shadow_runtime.start()
+            if not settings.oi_flash_enabled:
+                logging.getLogger("oitgbot.rolling.oi_flash.runtime").info(
+                    "OI_FLASH_STATUS enabled=false telegram_enabled=false"
+                )
         else:
             logging.getLogger("oitgbot.rolling.runtime").info(
                 "ROLLING_SHADOW_STATUS enabled=false"

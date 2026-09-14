@@ -28,6 +28,49 @@ The 15m analyzer uses:
 
 For an eligible candidate at interval `T`, NEW examines `[T - 12h, T)`. Any known prior eligible occurrence makes `is_new=False`; no prior eligible occurrence makes `is_new=True`. The current interval is excluded. Missing intervals, restarts, downtime, or coverage below 48/48 do not make NEW unknown. Telegram uses `🆕` on NEW rows and includes `🆕 NEW` only when a NEW row appears. Non-NEW rows have no marker.
 
+## OI FLASH v0
+
+Task 29 adds FLASH as an opt-in parallel path. It consumes the same canonical
+current-OI observations and mark-price stream as the existing products; it adds
+no Binance polling and no second WebSocket.
+
+For each symbol after a completed collector cycle, FLASH targets 60 seconds
+before the latest OI observation and selects the latest observation at or before
+that target. The baseline must produce an actual window from 60 through 105
+seconds. There is no interpolation or future-nearest selection. OI change is
+(current / baseline - 1) * 100; changes at or beyond +3.00% and -3.00% qualify.
+PX uses valid at-or-before price context from the same two OI samples. Missing PX
+renders NA and never suppresses OI.
+
+Publication uses one dedicated configured Telegram destination and batches a
+cycle by absolute OI% descending, then symbol. Cooldown is 15 minutes per
+(symbol, direction): the opposite direction bypasses and does not reset it.
+Accepted events establish cooldown even if Telegram fails. Cooldown restores
+from the dedicated database after restart.
+
+The separate state/oi_flash_research.sqlite3 database uses WAL and contains:
+
+- flash_bars_1m: closed UTC calendar-minute OI/price closes, actual observation
+  timestamps, consecutive-minute changes, counts, and validity flags; retained
+  for seven days.
+- flash_events: all threshold crossings reaching the decision stage, including
+  cooldown-suppressed crossings and Telegram outcomes; retained indefinitely.
+
+Minute aggregation is queued to a background writer. An event must be durably
+stored before Telegram is attempted. A FLASH database failure blocks FLASH
+publication but is isolated from collection, 5m/15m products, shadow analytics,
+and Task 21 telemetry. See docs/oi_flash_v0_spec.md.
+
+Read-only research tools:
+
+~~~powershell
+python -m tools.flash_research_status --db state/oi_flash_research.sqlite3
+python -m tools.flash_research_export --db state/oi_flash_research.sqlite3 --hours 168 --output flash-research-7d.csv.gz
+~~~
+
+Export creates flash-research-7d-bars.csv.gz and
+flash-research-7d-events.csv.gz, rendering stored epoch milliseconds as UTC ISO
+timestamps.
 ## Spot-backed futures universe
 
 The hourly refresh resolves active Binance USD-M USDT perpetual futures against active Binance Spot `TRADING` USDT markets:
@@ -59,8 +102,10 @@ exchange info -> canonical universe -> current OI REST (~30s)
                                       -> RollingOIStore
                                          |- 5m IMPULSE -> Telegram
                                          |- 15m ANOMALY -> Telegram
+                                         |- ~60s FLASH -> dedicated Telegram
+                                         |- UTC 1m FLASH research DB
                                          |- 60m/120m shadow
-                                         `- UTC 5m SQLite research bars
+                                         `- UTC 5m Task 21 research DB
 ```
 
 The SQLite LONG path uses `research_bars_5m` in `state/oi_research.sqlite3` by default, WAL mode, one background writer, and 14-day retention. It stores fixed UTC 5m OI/price OHLC bars, sample metadata, and closed/partial state. There is no historical Binance backfill. Telemetry failures are isolated from live collection and publication.
@@ -101,6 +146,17 @@ OI_ANOMALY_15M_MIN_HISTORY=96
 OI_ANOMALY_15M_ELIGIBILITY_PCT=1.0
 OI_ANOMALY_15M_NEW_LOOKBACK_HOURS=12
 OI_ANOMALY_15M_LOG_TOP_N=20
+
+# Safe defaults are disabled; set the chat ID manually before enabling publication.
+OI_FLASH_ENABLED=0
+OI_FLASH_TELEGRAM_ENABLED=0
+OI_FLASH_TELEGRAM_CHAT_ID=
+OI_FLASH_WINDOW_SECONDS=60
+OI_FLASH_THRESHOLD_PCT=3.0
+OI_FLASH_BASELINE_MAX_LAG_SECONDS=45
+OI_FLASH_COOLDOWN_SECONDS=900
+OI_FLASH_RESEARCH_DB_PATH=state/oi_flash_research.sqlite3
+OI_FLASH_RESEARCH_RETENTION_DAYS=7
 
 ROLLING_OI_20M_TOP_ENABLED=0
 ROLLING_OI_20M_OBSERVATION_PCT=1
@@ -209,13 +265,15 @@ For `Chat not found`, verify the `-100...` channel IDs and bot posting permissio
 - On 2026-09-05, `d2aa19735f7597cc7d518cf45526f9de4216fa9e` was manually cut over and validated.
 - Task 26 corrected NEW semantics and rebaselined documentation.
 - Task 27 production stabilization and observation is **PASS**.
-- Task 28 spot-backed universe and hints is **CODE PASS / LIVE VALIDATION PENDING**.
+- Task 28 spot-backed universe and hints is **CODE + PRODUCTION LIVE PASS**.
+- Task 29 FLASH v0 is **CODE PASS / LIVE VALIDATION PENDING** after local
+  verification; do not call it production-live until the separate deployment
+  checklist succeeds.
 
-Before Task 28 deployment, production remains 5m IMPULSE plus 15m OI ANOMALY over the previously deployed universe. Task 28 does not change analytics math, thresholds, routing, cadence, subscriptions, or the production 20m flag.
-
-### Planned research direction: OI Z-SCORE FLASH
-
-FLASH is unnumbered and unimplemented. It is a possible near-online 1m research direction: positive OI change with Z > +3 and negative anomalies at Z < -3. OI% and PX% would be context only. It has no BUY/SELL, squeeze, or liquidation interpretation. Publication requires 1m telemetry, shadow validation, and anti-spam trigger/re-arm design.
+Task 29 changes no 5m/15m analytics, routing, collector cadence, Binance request
+load, mark-price subscription, Spot mapping rule, or production 20m flag. It
+does not implement Z1m, percentiles, profitability or lead-time correlation,
+trading labels, PX gating, or a complex re-arm state machine.
 
 ## Security
 

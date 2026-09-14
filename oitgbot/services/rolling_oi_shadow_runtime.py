@@ -23,16 +23,16 @@ from oitgbot.services.rolling_oi_calculator import (
     AccumulationAnalyzer,
     RollingOICalculator,
 )
-from oitgbot.services.rolling_oi_store import RollingOIStore
+from oitgbot.services.rolling_oi_signal_persistence import (
+    RollingOISignalStatePersistence,
+)
 from oitgbot.services.rolling_oi_signal_state import (
     RollingOISignalDirection,
     RollingOISignalEvent,
     RollingOISignalEventType,
     RollingOISignalStateMachine,
 )
-from oitgbot.services.rolling_oi_signal_persistence import (
-    RollingOISignalStatePersistence,
-)
+from oitgbot.services.rolling_oi_store import RollingOIStore
 
 logger = logging.getLogger("oitgbot.rolling.runtime")
 
@@ -136,6 +136,7 @@ class RollingOIShadowRuntime:
         research_db_path: str = "state/oi_research.sqlite3",
         research_retention_days: float = 14.0,
         research_factory: Callable[..., Any] = ResearchTelemetry,
+        flash_runtime: Any | None = None,
     ) -> None:
         if cadence_seconds <= 0 or not math.isfinite(cadence_seconds):
             raise ValueError("cadence_seconds must be finite and positive")
@@ -163,12 +164,8 @@ class RollingOIShadowRuntime:
         self.cadence_seconds = float(cadence_seconds)
         self.workers = workers
         self.price_max_age_seconds = float(price_max_age_seconds)
-        self.observation_max_age_seconds = float(
-            observation_max_age_seconds
-        )
-        self.transaction_age_warning_seconds = float(
-            transaction_age_warning_seconds
-        )
+        self.observation_max_age_seconds = float(observation_max_age_seconds)
+        self.transaction_age_warning_seconds = float(transaction_age_warning_seconds)
         self.observation_thresholds = {
             300: float(observation_5m_pct),
             1200: float(observation_20m_pct),
@@ -181,6 +178,7 @@ class RollingOIShadowRuntime:
         self._collector_factory = collector_factory
         self.signal_publisher = signal_publisher
         self.signal_state_persistence = signal_state_persistence
+        self.flash_runtime = flash_runtime
         self.research_telemetry = (
             research_factory(
                 research_db_path,
@@ -203,10 +201,14 @@ class RollingOIShadowRuntime:
             rearm_threshold_pct=signal_5m_rearm_pct,
         )
         self.price_stream = stream_factory(self.price_state)
+        price_observers = []
         if self.research_telemetry is not None:
-            set_observer = getattr(self.price_stream, "set_observer", None)
-            if set_observer is not None:
-                set_observer(self.research_telemetry.observe_price)
+            price_observers.append(self.research_telemetry.observe_price)
+        if self.flash_runtime is not None:
+            price_observers.append(self.flash_runtime.observe_price)
+        set_observer = getattr(self.price_stream, "set_observer", None)
+        if set_observer is not None and price_observers:
+            set_observer(self._composite_observer("price", price_observers))
         self.rate_budget: Any | None = None
         self.collector: Any | None = None
 
@@ -228,10 +230,30 @@ class RollingOIShadowRuntime:
         self._completed_top_snapshot: RollingTopSnapshot | None = None
         self._completed_top_snapshot_lock = threading.Lock()
 
+    @staticmethod
+    def _composite_observer(name: str, observers: Sequence[Callable]) -> Callable:
+        def notify(value: Any) -> None:
+            for observer in observers:
+                try:
+                    observer(value)
+                except Exception:
+                    logger.exception(
+                        "ROLLING_OBSERVER status=failed observer=%s component=%s",
+                        getattr(observer, "__qualname__", type(observer).__name__),
+                        name,
+                    )
+
+        return notify
+
     async def start(self) -> None:
         if self._started:
             return
         self._started = True
+        if self.flash_runtime is not None:
+            try:
+                await self.flash_runtime.start()
+            except Exception:
+                logger.exception("OI_FLASH_STATUS status=degraded reason=start_failed")
         if self.research_telemetry is not None:
             try:
                 await asyncio.to_thread(self.research_telemetry.start)
@@ -277,6 +299,8 @@ class RollingOIShadowRuntime:
             self.price_state.set_eligible_symbols(symbols)
             if self.research_telemetry is not None:
                 self.research_telemetry.set_eligible_symbols(symbols)
+            if self.flash_runtime is not None:
+                self.flash_runtime.set_eligible_symbols(symbols)
             if self.signal_state_persistence is not None:
                 await asyncio.to_thread(
                     self.signal_state_persistence.load,
@@ -302,14 +326,8 @@ class RollingOIShadowRuntime:
                 max_workers=self.workers,
                 default_cadence_seconds=self.cadence_seconds,
                 price_max_age_seconds=self.price_max_age_seconds,
-                transaction_age_warning_seconds=(
-                    self.transaction_age_warning_seconds
-                ),
-                observation_sink=(
-                    self.research_telemetry.observe_oi
-                    if self.research_telemetry is not None
-                    else None
-                ),
+                transaction_age_warning_seconds=(self.transaction_age_warning_seconds),
+                observation_sink=self._oi_observer(),
             )
             self._rate_budget_state = BudgetState.SAFE.value
             self._last_cycle_state = "ready"
@@ -324,6 +342,14 @@ class RollingOIShadowRuntime:
             logger.exception(
                 "ROLLING_SHADOW_STATUS status=degraded reason=initialization_failed"
             )
+
+    def _oi_observer(self) -> Callable | None:
+        observers = []
+        if self.research_telemetry is not None:
+            observers.append(self.research_telemetry.observe_oi)
+        if self.flash_runtime is not None:
+            observers.append(self.flash_runtime.observe_oi)
+        return self._composite_observer("oi", observers) if observers else None
 
     def _load_symbols(self) -> tuple[str, ...]:
         return tuple(dict.fromkeys(symbol.upper() for symbol in self.symbol_provider()))
@@ -346,7 +372,9 @@ class RollingOIShadowRuntime:
                 )
             next_tick += self.cadence_seconds
             if next_tick <= loop.time():
-                missed = math.floor((loop.time() - next_tick) / self.cadence_seconds) + 1
+                missed = (
+                    math.floor((loop.time() - next_tick) / self.cadence_seconds) + 1
+                )
                 next_tick += missed * self.cadence_seconds
 
     async def _wait_for_stop(self, delay: float) -> bool:
@@ -364,6 +392,8 @@ class RollingOIShadowRuntime:
             self.price_state.set_eligible_symbols(symbols)
             if self.research_telemetry is not None:
                 self.research_telemetry.set_eligible_symbols(symbols)
+            if self.flash_runtime is not None:
+                self.flash_runtime.set_eligible_symbols(symbols)
             result = await self.collector.collect_cycle(
                 symbols, cadence_seconds=self.cadence_seconds
             )
@@ -394,13 +424,38 @@ class RollingOIShadowRuntime:
             if self._signal_state_changed:
                 await self._persist_signal_state(result.cycle_finished_at_utc)
             self._schedule_trigger_publications(self._last_signal_events)
+            self._submit_flash_cycle(result, symbols)
             return result
         except asyncio.CancelledError:
             raise
         except Exception:
             self._last_cycle_state = "cycle_failed"
-            logger.exception("ROLLING_SHADOW_STATUS status=degraded reason=cycle_failed")
+            logger.exception(
+                "ROLLING_SHADOW_STATUS status=degraded reason=cycle_failed"
+            )
             return None
+
+    def _submit_flash_cycle(
+        self,
+        result: CurrentOICycleResult,
+        symbols: Sequence[str],
+    ) -> None:
+        if self.flash_runtime is None:
+            return
+        rejection = self._completed_cycle_rejection_reason(result, len(symbols))
+        if rejection is not None:
+            logger.info("OI_FLASH_STATUS status=skipped reason=%s", rejection)
+            return
+        try:
+            self.flash_runtime.submit_cycle(
+                self.rolling_store,
+                symbols,
+                result.cycle_finished_at_utc,
+            )
+        except Exception:
+            logger.exception(
+                "OI_FLASH_STATUS status=degraded reason=cycle_submit_failed"
+            )
 
     @staticmethod
     def _classify_cycle(result: CurrentOICycleResult) -> str:
@@ -547,18 +602,15 @@ class RollingOIShadowRuntime:
             latest_age = (
                 cycle.cycle_finished_at_utc - latest.observed_at_utc
             ).total_seconds()
-            if (
-                latest_age < 0
-                or latest_age > self.observation_max_age_seconds
-            ):
+            if latest_age < 0 or latest_age > self.observation_max_age_seconds:
                 continue
-            for seconds in windows:
+            for seconds, window_results in windows.items():
                 try:
                     result = self.calculator.calculate(
                         self.rolling_store, symbol, seconds
                     )
                     if result.available:
-                        windows[seconds].append(result)
+                        window_results.append(result)
                         if seconds in long_metrics:
                             long_metrics[seconds].append(
                                 (
@@ -766,9 +818,7 @@ class RollingOIShadowRuntime:
     @staticmethod
     def _publish_done(symbol: str, task: asyncio.Task[Any]) -> None:
         if task.cancelled():
-            logger.error(
-                "ROLLING_SIGNAL_PUBLISH status=cancelled symbol=%s", symbol
-            )
+            logger.error("ROLLING_SIGNAL_PUBLISH status=cancelled symbol=%s", symbol)
             return
         error = task.exception()
         if error is not None:
@@ -794,8 +844,12 @@ class RollingOIShadowRuntime:
                 _pct(result.oi_quantity_change_pct),
                 _pct(result.price_change_pct),
                 _pct(result.oi_value_change_pct),
-                result.latest_timestamp.isoformat() if result.latest_timestamp else "NA",
-                result.baseline_timestamp.isoformat() if result.baseline_timestamp else "NA",
+                result.latest_timestamp.isoformat()
+                if result.latest_timestamp
+                else "NA",
+                result.baseline_timestamp.isoformat()
+                if result.baseline_timestamp
+                else "NA",
                 result.actual_window_seconds or 0.0,
             )
 
@@ -897,6 +951,9 @@ class RollingOIShadowRuntime:
                 await self._stream_task
         if self._publish_tasks:
             await asyncio.gather(*self._publish_tasks, return_exceptions=True)
+        if self.flash_runtime is not None:
+            with contextlib.suppress(Exception):
+                await self.flash_runtime.stop()
         if self.research_telemetry is not None:
             with contextlib.suppress(Exception):
                 await self.research_telemetry.stop()

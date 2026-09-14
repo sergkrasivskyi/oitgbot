@@ -1,9 +1,10 @@
 # Hybrid Rolling Open Interest Architecture
 
-Status: historical/current rolling architecture. Current production is 5m
-IMPULSE plus 15m OI ANOMALY. The legacy scheduled 20m TOP is disabled and
-retained only for rollback. Task 28 spot-backed filtering is code-complete and
-awaits manual production deployment.
+Status: current rolling architecture. Production is 5m IMPULSE plus 15m OI
+ANOMALY. The legacy scheduled 20m TOP is disabled and retained only for rollback.
+Task 28 spot-backed filtering has passed production live validation. Task 29 adds
+an opt-in FLASH consumer and dedicated telemetry path; its live validation is
+pending.
 
 This design replaces historical five-minute Open Interest buckets as the primary real-time signal source. It preserves the historical endpoint for diagnostics and shadow validation while building production signals from timestamped current OI samples and WebSocket mark prices.
 
@@ -34,6 +35,38 @@ analytics, and rollback reports. Refresh failure never restores the unfiltered
 futures universe: startup stays empty and later failures keep the in-memory
 last-known-good result. Historical SQLite rows are untouched.
 
+## Task 29 parallel FLASH path
+
+FLASH does not own market-data transport. After each completed
+CurrentOICollector cycle it reads the same RollingOIStore used by 5m/15m and
+selects the latest baseline at or before current observation time minus 60
+seconds, with at most 45 seconds of baseline lag. Inclusive absolute 3% crossings
+flow through a 900-second symbol-and-direction cooldown.
+
+The one existing OI observation callback and one existing mark-price stream
+fan out through isolated composite observers to both Task 21 telemetry and the
+dedicated FLASH minute aggregator. The FLASH database is separate and its minute
+writes use a background queue. Accepted event writes are awaited off the event
+loop before the existing Telegram sender may target the dedicated FLASH chat.
+Any FLASH exception is contained at that boundary.
+
+~~~text
+existing current-OI REST -----> CurrentOICollector -----> RollingOIStore
+                                       |                       |
+                                       |                       +--> 5m / 15m / shadow
+                                       |                       |
+existing mark-price WS ---------------+-----------------------+--> FLASH detector
+                  |                    |
+                  +--> PriceStateStore +--> isolated observers
+                                             |- Task 21 5m telemetry DB
+                                             +- Task 29 1m FLASH DB
+                                                        |
+                                                        +--> dedicated Telegram
+~~~
+
+No second current-OI polling loop, mark-price WebSocket, or Spot-price request is
+part of Task 29. See docs/oi_flash_v0_spec.md for the exact detector, cooldown,
+schema, and failure contracts.
 ## Target architecture
 
 ```text

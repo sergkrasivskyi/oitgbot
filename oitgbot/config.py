@@ -168,6 +168,35 @@ class Settings:
     oi_anomaly_15m_log_top_n: int = field(
         default_factory=lambda: _get_int("OI_ANOMALY_15M_LOG_TOP_N", "20")
     )
+    oi_flash_enabled: bool = field(
+        default_factory=lambda: _get_bool("OI_FLASH_ENABLED", "0")
+    )
+    oi_flash_telegram_enabled: bool = field(
+        default_factory=lambda: _get_bool("OI_FLASH_TELEGRAM_ENABLED", "0")
+    )
+    oi_flash_telegram_chat_id: str = field(
+        default_factory=lambda: os.environ.get("OI_FLASH_TELEGRAM_CHAT_ID", "")
+    )
+    oi_flash_window_seconds: float = field(
+        default_factory=lambda: _get_float("OI_FLASH_WINDOW_SECONDS", "60")
+    )
+    oi_flash_threshold_pct: float = field(
+        default_factory=lambda: _get_float("OI_FLASH_THRESHOLD_PCT", "3.0")
+    )
+    oi_flash_baseline_max_lag_seconds: float = field(
+        default_factory=lambda: _get_float("OI_FLASH_BASELINE_MAX_LAG_SECONDS", "45")
+    )
+    oi_flash_cooldown_seconds: float = field(
+        default_factory=lambda: _get_float("OI_FLASH_COOLDOWN_SECONDS", "900")
+    )
+    oi_flash_research_db_path: str = field(
+        default_factory=lambda: os.environ.get(
+            "OI_FLASH_RESEARCH_DB_PATH", "state/oi_flash_research.sqlite3"
+        )
+    )
+    oi_flash_research_retention_days: float = field(
+        default_factory=lambda: _get_float("OI_FLASH_RESEARCH_RETENTION_DAYS", "7")
+    )
     rolling_oi_20m_top_enabled: bool = field(
         default_factory=lambda: _get_bool("ROLLING_OI_20M_TOP_ENABLED", "1")
     )
@@ -222,6 +251,42 @@ class Settings:
             raise RuntimeError(
                 "Invalid 15m OI anomaly config: " + "; ".join(anomaly_invalid)
             )
+        flash_invalid = []
+        if self.oi_flash_telegram_enabled and not self.oi_flash_enabled:
+            flash_invalid.append("OI_FLASH_TELEGRAM_ENABLED requires OI_FLASH_ENABLED")
+        if self.oi_flash_telegram_enabled and not self.telegram_publish_enabled:
+            flash_invalid.append(
+                "OI_FLASH_TELEGRAM_ENABLED requires TELEGRAM_PUBLISH_ENABLED"
+            )
+        if (
+            self.oi_flash_telegram_enabled
+            and not self.oi_flash_telegram_chat_id.strip()
+        ):
+            flash_invalid.append(
+                "OI_FLASH_TELEGRAM_CHAT_ID is required when FLASH Telegram is enabled"
+            )
+        if self.oi_flash_enabled:
+            if not self.rolling_oi_shadow_enabled:
+                flash_invalid.append("OI_FLASH_ENABLED requires rolling shadow")
+            for name, value in (
+                ("OI_FLASH_WINDOW_SECONDS", self.oi_flash_window_seconds),
+                ("OI_FLASH_THRESHOLD_PCT", self.oi_flash_threshold_pct),
+                (
+                    "OI_FLASH_BASELINE_MAX_LAG_SECONDS",
+                    self.oi_flash_baseline_max_lag_seconds,
+                ),
+                ("OI_FLASH_COOLDOWN_SECONDS", self.oi_flash_cooldown_seconds),
+                (
+                    "OI_FLASH_RESEARCH_RETENTION_DAYS",
+                    self.oi_flash_research_retention_days,
+                ),
+            ):
+                if not math.isfinite(value) or value <= 0:
+                    flash_invalid.append(f"{name} must be finite and > 0")
+            if not self.oi_flash_research_db_path.strip():
+                flash_invalid.append("OI_FLASH_RESEARCH_DB_PATH must not be empty")
+        if flash_invalid:
+            raise RuntimeError("Invalid OI FLASH config: " + "; ".join(flash_invalid))
         if self.rolling_oi_shadow_enabled:
             invalid = []
             if self.rolling_oi_cadence_seconds <= 0:
