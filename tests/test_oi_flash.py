@@ -129,8 +129,9 @@ class OIFlashDetectorTests(TestCase):
                     is not None,
                 )
 
-    def test_missing_stale_or_future_price_is_na_without_suppressing_oi(self) -> None:
+    def test_price_availability_or_staleness_does_not_change_eligibility(self) -> None:
         for price, price_at in (
+            (101.0, NOW),
             (None, None),
             (101.0, NOW - timedelta(seconds=6)),
             (101.0, NOW + timedelta(seconds=1)),
@@ -141,7 +142,7 @@ class OIFlashDetectorTests(TestCase):
                 add_sample(store, NOW, 104, price=price, price_at=price_at)
                 event = OIFlashDetector().evaluate_symbol(store, "BTCUSDT", NOW)
                 self.assertIsNotNone(event)
-                self.assertIsNone(event.px_pct)  # type: ignore[union-attr]
+                self.assertAlmostEqual(4.0, event.oi_pct)  # type: ignore[union-attr]
 
     def test_only_requested_canonical_symbols_are_evaluated(self) -> None:
         store = RollingOIStore()
@@ -184,8 +185,9 @@ class OIFlashFormatterPublisherTests(IsolatedAsyncioTestCase):
         message = sender.calls[0][1]
         self.assertTrue(message.startswith("⚡ OI FLASH · 1m"))
         self.assertLess(message.index("OI -4.00%"), message.index("OI +3.20%"))
-        self.assertIn("PX -0.18%", message)
-        self.assertIn("PX NA", message)
+        self.assertIn("OI -4.00%", message)
+        self.assertIn("OI +3.20%", message)
+        self.assertNotIn("PX", message)
         self.assertIn("Binance_1000PEPEUSDT", message)
         self.assertIn("1000PEPEUSDT</a> · PEPE (S)", message)
         self.assertNotIn("BTCUSDT</a> · BTC (S)", message)
@@ -252,11 +254,20 @@ class OIFlashResearchStoreTests(TestCase):
         telemetry.observe_price(MarkPriceUpdate("BTCUSDT", 10, first, first))
         next_minute = first + timedelta(minutes=1)
         telemetry.observe_oi(RollingOISample("BTCUSDT", 101, next_minute, next_minute))
+        telemetry.observe_price(MarkPriceUpdate("BTCUSDT", 11, next_minute, next_minute))
+        third_minute = next_minute + timedelta(minutes=1)
+        telemetry.observe_oi(RollingOISample("BTCUSDT", 102, third_minute, third_minute))
         telemetry.stop_sync()
         with self.store.connect(read_only=True) as connection:
-            row = connection.execute("SELECT * FROM flash_bars_1m").fetchone()
-        self.assertEqual(100, row["oi_close"])
-        self.assertEqual(10, row["price_close"])
+            rows = connection.execute(
+                "SELECT * FROM flash_bars_1m ORDER BY minute_start_utc"
+            ).fetchall()
+        self.assertEqual(100, rows[0]["oi_close"])
+        self.assertEqual(10, rows[0]["price_close"])
+        self.assertEqual(11, rows[1]["price_close"])
+        self.assertAlmostEqual(10.0, rows[1]["px_1m_pct"])
+        self.assertEqual(1, rows[1]["valid_price"])
+        self.assertEqual(1, rows[1]["price_observation_count"])
 
     def test_bar_retention_does_not_delete_events(self) -> None:
         old = NOW - timedelta(days=8)
@@ -469,6 +480,29 @@ class OIFlashRuntimeTests(IsolatedAsyncioTestCase):
         self.assertEqual(2, store.load_calls)
         self.assertEqual(1, len(publisher.calls))
         self.assertEqual("negative", publisher.calls[0][0].direction.value)
+
+    async def test_qualifying_oi_without_price_is_accepted_and_published(self) -> None:
+        rolling_store = RollingOIStore()
+        add_sample(
+            rolling_store,
+            NOW - timedelta(seconds=60),
+            100,
+            price=None,
+        )
+        add_sample(rolling_store, NOW, 104, price=None)
+        events = self.runtime.detector.evaluate(rolling_store, ("BTCUSDT",), NOW)
+
+        self.assertEqual(1, len(events))
+        self.assertIsNone(events[0].px_pct)
+        await self.runtime._process_candidates(events)
+
+        self.assertEqual(1, len(self.publisher.calls))
+        with self.store.connect(read_only=True) as connection:
+            row = connection.execute(
+                "SELECT px_pct, suppressed_by_cooldown, telegram_sent "
+                "FROM flash_events"
+            ).fetchone()
+        self.assertEqual((None, 0, 1), tuple(row))
 
     async def test_suppressed_crossing_and_publish_state_are_persisted(self) -> None:
         await self.runtime._process_candidates((candidate(),))

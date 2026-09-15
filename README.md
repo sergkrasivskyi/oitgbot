@@ -39,8 +39,8 @@ before the latest OI observation and selects the latest observation at or before
 that target. The baseline must produce an actual window from 60 through 105
 seconds. There is no interpolation or future-nearest selection. OI change is
 (current / baseline - 1) * 100; changes at or beyond +3.00% and -3.00% qualify.
-PX uses valid at-or-before price context from the same two OI samples. Missing PX
-renders NA and never suppresses OI.
+Live FLASH Telegram rows contain only OI% and the futures ticker. Price remains
+in closed-minute research telemetry; missing or stale price never suppresses FLASH.
 
 Publication uses one dedicated configured Telegram destination and batches a
 cycle by absolute OI% descending, then symbol. Cooldown is 15 minutes per

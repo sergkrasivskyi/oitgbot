@@ -121,14 +121,8 @@ class ReportFormatter:
         """Format pre-sorted FLASH events for the dedicated channel."""
         lines = ["\u26a1 OI FLASH \u00b7 1m", ""]
         for event in events:
-            price = (
-                f"{self._fmt_signed(event.px_pct)}%"
-                if event.px_pct is not None
-                else "NA"
-            )
             lines.append(
-                f"OI {self._fmt_signed(event.oi_pct)}% | PX {price} | "
-                f"{self._ticker(event.symbol)}"
+                f"OI {self._fmt_signed(event.oi_pct)}% | {self._ticker(event.symbol)}"
             )
         return "\n".join(lines).strip()
 

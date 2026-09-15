@@ -12,8 +12,8 @@ Task 29 implements opt-in 1m OI FLASH v0 and dedicated research telemetry. Its
 status is **CODE PASS / LIVE VALIDATION PENDING** after local verification. The
 base implementation commit is `e53f37bf7150e3ebdef23e969526a069af71d7b7`
 with message "feat: add 1m oi flash research pipeline". The cooldown-recovery
-addendum is also CODE PASS. Do not mark LIVE PASS until the laptop/tablet
-checklist succeeds.
+and OI-only live-output addenda are also CODE PASS. Do not mark LIVE PASS until
+the laptop/tablet checklist succeeds.
 
 ## Task 29 live semantics
 
@@ -28,9 +28,10 @@ After each completed existing current-OI cycle, for each canonical Task 28 symbo
 5. Trigger inclusively at >= +3.00% or <= -3.00%.
 
 There is no Z score, percentile, persistence gate, PX gate, trading direction,
-or squeeze/liquidation interpretation. PX is aligned at or before both OI
-timestamps under existing price-age rules. Missing/invalid PX becomes NA without
-suppressing valid OI.
+or squeeze/liquidation interpretation. Live FLASH Telegram is OI-only. Missing,
+stale, or unmatched price never suppresses detection, acceptance, or publication.
+Price close/change/validity telemetry remains in closed UTC-minute research bars,
+separate from the live signal; nullable historical event PX stays compatible.
 
 Cooldown is 900 seconds per (futures symbol, direction). The opposite direction
 bypasses and does not reset the other direction. Elapsed time exactly 900 seconds
@@ -49,8 +50,8 @@ ordered by absolute OI% descending then symbol and batched/chunked.
 ~~~text
 ⚡ OI FLASH · 1m
 
-OI +3.74% | PX +0.42% | THETAUSDT
-OI +3.21% | PX -0.18% | 1000PEPEUSDT · PEPE (S)
+OI +3.74% | THETAUSDT
+OI +3.21% | 1000PEPEUSDT · PEPE (S)
 ~~~
 
 Tickers keep CoinGlass futures links. Task 28 Spot hints remain plain text.
@@ -110,10 +111,10 @@ LONG/SHORT interpretation, PX eligibility, or complex re-arm logic.
 
 ## Validation and next steps
 
-Local CODE PASS verification: focused FLASH runtime tests passed 23 tests plus
-9 subtests; the full repository passed 322 tests plus 60 subtests. Ruff,
-compile/import sanity, CLI coverage, documentation scans, and git diff --check
-also passed before commit.
+Local CODE PASS verification: focused FLASH tests passed 26 tests plus 10
+subtests; the full repository passed 323 tests plus 61 subtests. Ruff on the
+changed Python files, compile/import sanity, and git diff --check passed before
+commit. Repository-wide Ruff still reports 51 pre-existing legacy violations.
 
 Laptop forward-validation with no Telegram sends:
 

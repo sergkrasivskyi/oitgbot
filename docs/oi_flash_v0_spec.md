@@ -24,10 +24,11 @@ window is inclusively 60 through 105 seconds. There is no interpolation and no
 future-nearest selection. `oi_pct >= +3.00` is positive; `oi_pct <= -3.00` is
 negative. OI% is the only eligibility input.
 
-PX compares the mark prices attached to the selected current and baseline OI
-samples. Each price timestamp must be at or before its OI timestamp and within
-the existing configured price maximum age. Missing, stale, future, or invalid
-price makes PX unavailable without suppressing OI.
+The live FLASH Telegram signal is OI-only: `OI +3.74% | Ticker`, with no PX.
+Missing, stale, future, or unmatched rolling price context never suppresses
+FLASH detection, acceptance, or publication. Price remains research telemetry
+in closed UTC-minute bars, separate from the live signal. Optional event PX
+values remain compatible with the existing nullable SQLite column.
 
 ## Cooldown and publication
 
